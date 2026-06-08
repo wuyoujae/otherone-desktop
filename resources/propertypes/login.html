@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In | Otherone</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        :root {
+            --bg-page: #F9F9F8;
+            --bg-form: #FFFFFF;
+
+            --text-dark: #050505;
+            --text-muted: #737373;
+            --text-light: #A0A0A0;
+
+            --border-light: rgba(0, 0, 0, 0.08);
+            --border-focus: rgba(5, 5, 5, 0.8);
+
+            --font-display: 'Space Grotesk', sans-serif;
+            --font-body: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+
+            --bezier-award: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-page);
+            color: var(--text-dark);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        button,
+        input {
+            font-family: inherit;
+        }
+
+        /* ================= 左侧品牌视觉区 ================= */
+        .auth-visual {
+            flex: 1.2;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 64px;
+            overflow: hidden;
+        }
+
+        .brand-logo {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            font-family: var(--font-display);
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dark);
+            text-decoration: none;
+            z-index: 10;
+        }
+
+        .brand-bean {
+            width: 26px;
+            height: 26px;
+            display: block;
+            flex-shrink: 0;
+        }
+
+        .bg-grid {
+            position: absolute;
+            inset: 0;
+            background-size: 60px 60px;
+            background-image:
+                linear-gradient(to right, var(--border-light) 1px, transparent 1px),
+                linear-gradient(to bottom, var(--border-light) 1px, transparent 1px);
+            mask-image: radial-gradient(circle at center, black 20%, transparent 80%);
+            -webkit-mask-image: radial-gradient(circle at center, black 20%, transparent 80%);
+            z-index: 0;
+        }
+
+        .blob-bg {
+            position: absolute;
+            top: 20%;
+            left: 10%;
+            width: 50vw;
+            height: 50vw;
+            background: radial-gradient(circle, rgba(224,195,252,0.26) 0%, rgba(142,197,252,0.18) 48%, transparent 72%);
+            filter: blur(80px);
+            animation: pulseBlob 12s ease-in-out infinite alternate;
+            z-index: 0;
+        }
+
+        @keyframes pulseBlob {
+            0% {
+                transform: scale(1) translate(0, 0);
+            }
+            100% {
+                transform: scale(1.1) translate(5%, 5%);
+            }
+        }
+
+        .visual-content {
+            position: relative;
+            z-index: 2;
+            max-width: 620px;
+        }
+
+        .visual-title {
+            font-family: var(--font-display);
+            font-size: clamp(48px, 5vw, 76px);
+            font-weight: 700;
+            line-height: 0.98;
+            letter-spacing: -2.5px;
+            margin-bottom: 26px;
+            text-transform: uppercase;
+        }
+
+        .text-outline {
+            color: transparent;
+            -webkit-text-stroke: 1.7px var(--text-dark);
+        }
+
+        .visual-desc {
+            font-size: 18px;
+            color: var(--text-muted);
+            line-height: 1.65;
+            max-width: 560px;
+            font-weight: 500;
+        }
+
+        .glass-widget {
+            margin-top: 64px;
+            background: rgba(255, 255, 255, 0.42);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255,255,255,0.64);
+            border-radius: 22px;
+            padding: 24px;
+            width: min(100%, 500px);
+            box-shadow:
+                0 22px 50px rgba(0,0,0,0.055),
+                inset 0 0 0 1px rgba(255,255,255,0.45);
+            animation: floatWidget 6s ease-in-out infinite alternate;
+        }
+
+        @keyframes floatWidget {
+            0% {
+                transform: translateY(0);
+            }
+            100% {
+                transform: translateY(-16px);
+            }
+        }
+
+        .widget-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .widget-header .dot {
+            width: 8px;
+            height: 8px;
+            background: #27C93F;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #27C93F;
+        }
+
+        .widget-terminal {
+            background: #050505;
+            color: #fff;
+            padding: 16px;
+            border-radius: 14px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.75;
+            color: #A0A0A0;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+        }
+
+        .widget-terminal span {
+            color: #8EC5FC;
+        }
+
+        .visual-footer {
+            position: absolute;
+            left: 64px;
+            bottom: 40px;
+            z-index: 2;
+            color: var(--text-light);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+        }
+
+        /* ================= 右侧表单区 ================= */
+        .auth-panel {
+            flex: 0.8;
+            min-width: 500px;
+            background: var(--bg-form);
+            box-shadow: -20px 0 60px rgba(0,0,0,0.035);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+            z-index: 10;
+        }
+
+        .form-container {
+            width: 100%;
+            max-width: 400px;
+            animation: fadeUp 0.8s var(--bezier-award) forwards;
+        }
+
+        .form-header {
+            margin-bottom: 38px;
+            text-align: center;
+        }
+
+        .form-title {
+            font-family: var(--font-display);
+            font-size: 34px;
+            font-weight: 700;
+            letter-spacing: -1.2px;
+            margin-bottom: 9px;
+            transition: opacity 0.25s ease, transform 0.25s var(--bezier-award);
+        }
+
+        .form-subtitle {
+            font-size: 15px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .oauth-group {
+            display: flex;
+            gap: 14px;
+            margin-bottom: 30px;
+        }
+
+        .btn-oauth {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 14px;
+            border: 1px solid var(--border-light);
+            border-radius: 13px;
+            background: transparent;
+            color: var(--text-dark);
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.25s var(--bezier-award);
+        }
+
+        .btn-oauth:hover {
+            background: var(--bg-page);
+            border-color: rgba(0,0,0,0.18);
+            transform: translateY(-2px);
+        }
+
+        .btn-oauth svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            text-align: center;
+            color: var(--text-light);
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 30px;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .divider:not(:empty)::before {
+            margin-right: .75em;
+        }
+
+        .divider:not(:empty)::after {
+            margin-left: .75em;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-dark);
+            margin-bottom: 8px;
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 16px;
+            color: var(--text-light);
+            pointer-events: none;
+            transition: color 0.3s;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 16px 48px 16px 44px;
+            background: var(--bg-page);
+            border: 1px solid var(--border-light);
+            border-radius: 13px;
+            font-size: 15px;
+            color: var(--text-dark);
+            transition: all 0.3s;
+            outline: none;
+            font-weight: 500;
+        }
+
+        .form-input::placeholder {
+            color: var(--text-light);
+        }
+
+        .form-input:focus {
+            background: #fff;
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 4px rgba(5, 5, 5, 0.04);
+        }
+
+        .form-input:focus + .input-icon {
+            color: var(--text-dark);
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 10px;
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 10px;
+            background: transparent;
+            color: var(--text-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.25s ease, color 0.25s ease;
+        }
+
+        .password-toggle:hover {
+            background: rgba(0,0,0,0.055);
+            color: var(--text-dark);
+        }
+
+        .password-toggle svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .form-options {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            font-size: 13px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-weight: 500;
+            user-select: none;
+        }
+
+        .checkbox-group input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--text-dark);
+        }
+
+        .forgot-link {
+            color: var(--text-dark);
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .forgot-link:hover {
+            text-decoration: underline;
+            text-underline-offset: 4px;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 18px;
+            border: none;
+            border-radius: 100px;
+            background: var(--text-dark);
+            color: #fff;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.3s var(--bezier-award), box-shadow 0.3s, background 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            background: #222;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.12);
+        }
+
+        .btn-submit:active {
+            transform: translateY(0);
+        }
+
+        .form-footer {
+            text-align: center;
+            margin-top: 32px;
+            font-size: 14px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .form-footer a {
+            color: var(--text-dark);
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
+            padding-left: 4px;
+        }
+
+        .form-footer a:hover {
+            text-decoration: underline;
+            text-underline-offset: 4px;
+        }
+
+        #nameGroup {
+            display: none;
+            opacity: 0;
+            transform: translateY(-8px);
+            transition: opacity 0.3s, transform 0.3s var(--bezier-award);
+        }
+
+        #termsGroup {
+            display: none;
+            opacity: 0;
+            transform: translateY(-8px);
+            transition: opacity 0.3s, transform 0.3s var(--bezier-award);
+            margin-bottom: 26px;
+        }
+
+        .terms-copy {
+            color: var(--text-light);
+            font-size: 12px;
+            line-height: 1.65;
+            text-align: center;
+            margin-top: 18px;
+            display: none;
+        }
+
+        .terms-copy a {
+            color: var(--text-dark);
+            font-weight: 700;
+            text-decoration: none;
+            border-bottom: 1px solid rgba(0,0,0,0.18);
+        }
+
+        .form-error {
+            display: none;
+            margin-bottom: 18px;
+            padding: 12px 14px;
+            border-radius: 13px;
+            background: rgba(5,5,5,0.045);
+            color: var(--text-dark);
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.45;
+            align-items: flex-start;
+            gap: 9px;
+        }
+
+        .form-error.is-visible {
+            display: flex;
+            animation: fadeUp 0.35s var(--bezier-award) forwards;
+        }
+
+        .form-error svg {
+            width: 17px;
+            height: 17px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 980px) {
+            body {
+                flex-direction: column;
+                overflow-y: auto;
+                min-height: 100vh;
+                height: auto;
+            }
+
+            .auth-visual {
+                display: none;
+            }
+
+            .auth-panel {
+                flex: 1;
+                min-width: 100%;
+                min-height: 100vh;
+                padding: 36px 20px;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .auth-panel {
+                padding: 30px 18px;
+            }
+
+            .form-container {
+                max-width: 100%;
+            }
+
+            .oauth-group {
+                flex-direction: column;
+            }
+
+            .form-options {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 14px;
+            }
+
+            .form-title {
+                font-size: 30px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- 左侧：视觉与品牌区 -->
+    <div class="auth-visual">
+        <div class="bg-grid"></div>
+        <div class="blob-bg"></div>
+
+        <a href="./index.html" class="brand-logo">
+            <svg class="brand-bean" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <circle cx="128" cy="128" r="96" fill="white" stroke="black" stroke-width="14" />
+                <circle cx="96" cy="112" r="15" fill="black" />
+                <circle cx="160" cy="112" r="15" fill="black" />
+            </svg>
+            Otherone
+        </a>
+
+        <div class="visual-content">
+            <h1 class="visual-title">
+                Welcome to the<br>
+                <span class="text-outline">Autonomous Era.</span>
+            </h1>
+
+            <p class="visual-desc">
+                Sign in to access your digital workforce, manage active agents, and orchestrate complex workflows across your devices.
+            </p>
+
+            <div class="glass-widget">
+                <div class="widget-header">
+                    <div class="dot"></div>
+                    System Status: 1 Agent Active
+                </div>
+                <div class="widget-terminal">
+                    &gt; Agent "Architect" is running...<br>
+                    &gt; Parsing local directory: <span>/src/components</span><br>
+                    &gt; Refactoring complete. Waiting for sync.
+                </div>
+            </div>
+        </div>
+
+        <div class="visual-footer">
+            Review-first autonomous workspaces for builders.
+        </div>
+    </div>
+
+    <!-- 右侧：登录 / 注册表单区 -->
+    <div class="auth-panel">
+        <div class="form-container">
+
+            <div class="form-header">
+                <h2 class="form-title" id="formTitle">Sign In</h2>
+                <p class="form-subtitle" id="formSubtitle">Continue to your workspace</p>
+            </div>
+
+            <div class="oauth-group">
+                <button class="btn-oauth" type="button">
+                    <i data-lucide="github"></i>
+                    GitHub
+                </button>
+
+                <button class="btn-oauth" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M4 4l11.8 16H20L8.2 4H4z"></path>
+                        <path d="M4 20L10.8 13.2"></path>
+                        <path d="M13.2 10.8L20 4"></path>
+                    </svg>
+                    X
+                </button>
+            </div>
+
+            <div class="divider">or continue with email</div>
+
+            <form id="authForm" novalidate>
+                <div class="form-error" id="formError">
+                    <i data-lucide="circle-alert"></i>
+                    <span id="formErrorText">Please complete all required fields.</span>
+                </div>
+
+                <div class="input-group" id="nameGroup">
+                    <label class="input-label" for="fullName">Full Name</label>
+                    <div class="input-wrapper">
+                        <input type="text" class="form-input" id="fullName" placeholder="John Doe" autocomplete="name">
+                        <i data-lucide="user" class="input-icon" style="width: 18px;"></i>
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label class="input-label" for="email">Email Address</label>
+                    <div class="input-wrapper">
+                        <input type="email" class="form-input" id="email" placeholder="you@example.com" autocomplete="email" required>
+                        <i data-lucide="mail" class="input-icon" style="width: 18px;"></i>
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label class="input-label" for="password">Password</label>
+                    <div class="input-wrapper">
+                        <input type="password" class="form-input" id="password" placeholder="••••••••" autocomplete="current-password" required>
+                        <i data-lucide="lock" class="input-icon" style="width: 18px;"></i>
+
+                        <button class="password-toggle" type="button" id="passwordToggle" aria-label="Show password">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-options" id="formOptions">
+                    <label class="checkbox-group">
+                        <input type="checkbox" checked>
+                        Remember me
+                    </label>
+
+                    <a href="#" class="forgot-link">Forgot password?</a>
+                </div>
+
+                <div class="form-options" id="termsGroup">
+                    <label class="checkbox-group">
+                        <input type="checkbox" id="termsCheck">
+                        I agree to the Terms and Privacy Policy
+                    </label>
+                </div>
+
+                <button type="submit" class="btn-submit" id="submitBtn">
+                    Sign In
+                    <i data-lucide="arrow-right"></i>
+                </button>
+
+                <p class="terms-copy" id="termsCopy">
+                    By creating an account, you agree to Otherone's
+                    <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.
+                </p>
+            </form>
+
+            <div class="form-footer">
+                <span id="footerText">Don't have an account?</span>
+                <a onclick="toggleMode()" id="toggleBtn">Sign Up</a>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        let isLoginMode = true;
+
+        const formTitle = document.getElementById('formTitle');
+        const formSubtitle = document.getElementById('formSubtitle');
+        const submitBtn = document.getElementById('submitBtn');
+        const footerText = document.getElementById('footerText');
+        const toggleBtn = document.getElementById('toggleBtn');
+        const nameGroup = document.getElementById('nameGroup');
+        const formOptions = document.getElementById('formOptions');
+        const termsGroup = document.getElementById('termsGroup');
+        const termsCopy = document.getElementById('termsCopy');
+        const authForm = document.getElementById('authForm');
+        const formError = document.getElementById('formError');
+        const formErrorText = document.getElementById('formErrorText');
+        const password = document.getElementById('password');
+        const passwordToggle = document.getElementById('passwordToggle');
+
+        function showBlock(element) {
+            element.style.display = element.id === 'termsGroup' ? 'flex' : 'block';
+
+            requestAnimationFrame(() => {
+                element.style.opacity = '1';
+                element.style.transform = 'translateY(0)';
+            });
+        }
+
+        function hideBlock(element) {
+            element.style.opacity = '0';
+            element.style.transform = 'translateY(-8px)';
+
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 260);
+        }
+
+        function resetSubmitButton() {
+            submitBtn.innerHTML = `${isLoginMode ? 'Sign In' : 'Create Account'} <i data-lucide="arrow-right"></i>`;
+            lucide.createIcons();
+        }
+
+        function toggleMode() {
+            formError.classList.remove('is-visible');
+
+            formTitle.style.opacity = '0';
+            formTitle.style.transform = 'translateY(8px)';
+            formSubtitle.style.opacity = '0';
+
+            setTimeout(() => {
+                isLoginMode = !isLoginMode;
+
+                if (isLoginMode) {
+                    document.title = 'Sign In | Otherone';
+                    formTitle.innerText = 'Sign In';
+                    formSubtitle.innerText = 'Continue to your workspace';
+                    footerText.innerText = "Don't have an account?";
+                    toggleBtn.innerText = 'Sign Up';
+                    password.setAttribute('autocomplete', 'current-password');
+
+                    hideBlock(nameGroup);
+                    hideBlock(termsGroup);
+                    termsCopy.style.display = 'none';
+                    formOptions.style.display = 'flex';
+                } else {
+                    document.title = 'Sign Up | Otherone';
+                    formTitle.innerText = 'Create Account';
+                    formSubtitle.innerText = 'Start building your digital workforce';
+                    footerText.innerText = 'Already have an account?';
+                    toggleBtn.innerText = 'Sign In';
+                    password.setAttribute('autocomplete', 'new-password');
+
+                    showBlock(nameGroup);
+                    showBlock(termsGroup);
+                    termsCopy.style.display = 'block';
+                    formOptions.style.display = 'none';
+                }
+
+                resetSubmitButton();
+
+                formTitle.style.opacity = '1';
+                formTitle.style.transform = 'translateY(0)';
+                formSubtitle.style.opacity = '1';
+            }, 180);
+        }
+
+        function isValidEmail(value) {
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+        }
+
+        passwordToggle.addEventListener('click', () => {
+            const isPassword = password.type === 'password';
+
+            password.type = isPassword ? 'text' : 'password';
+            passwordToggle.innerHTML = `<i data-lucide="${isPassword ? 'eye-off' : 'eye'}"></i>`;
+            lucide.createIcons();
+        });
+
+        authForm.addEventListener('submit', event => {
+            event.preventDefault();
+
+            const fullName = document.getElementById('fullName').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const passwordValue = password.value.trim();
+            const termsChecked = document.getElementById('termsCheck').checked;
+
+            if (!isValidEmail(email)) {
+                formErrorText.textContent = 'Please enter a valid email address.';
+                formError.classList.add('is-visible');
+                return;
+            }
+
+            if (isLoginMode && passwordValue.length < 1) {
+                formErrorText.textContent = 'Please enter your password.';
+                formError.classList.add('is-visible');
+                return;
+            }
+
+            if (!isLoginMode && fullName.length < 2) {
+                formErrorText.textContent = 'Please enter your full name.';
+                formError.classList.add('is-visible');
+                return;
+            }
+
+            if (!isLoginMode && passwordValue.length < 8) {
+                formErrorText.textContent = 'Password must be at least 8 characters.';
+                formError.classList.add('is-visible');
+                return;
+            }
+
+            if (!isLoginMode && !termsChecked) {
+                formErrorText.textContent = 'Please agree to the Terms and Privacy Policy.';
+                formError.classList.add('is-visible');
+                return;
+            }
+
+            formError.classList.remove('is-visible');
+
+            submitBtn.innerHTML = `${isLoginMode ? 'Signing in' : 'Creating account'} <i data-lucide="loader"></i>`;
+            lucide.createIcons();
+
+            setTimeout(() => {
+                submitBtn.innerHTML = `${isLoginMode ? 'Signed in' : 'Account created'} <i data-lucide="check"></i>`;
+                lucide.createIcons();
+            }, 850);
+        });
+    </script>
+</body>
+</html>

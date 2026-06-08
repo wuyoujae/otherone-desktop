@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Flowing Glow Messages</title>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* ================= 核心 CSS 变量 ================= */
+        :root {
+            --bg-app: #000000;
+            --bg-toast: #0a0a0a;      /* 卡片内部极暗背景 */
+            --bg-toast-base: #1f1f1f; /* 流光未扫过时的底色边框 */
+            
+            --text-primary: #ffffff;
+            --text-secondary: #888888;
+            
+            --shadow-toast: 0 12px 40px rgba(0, 0, 0, 0.8); 
+            
+            /* 流光主题色 (带有透明度的发光色) */
+            --glow-info: #ffffff;
+            --glow-success: #10b981;  /* 高级翠绿 */
+            --glow-warn: #f59e0b;     /* 高级琥珀 */
+            --glow-error: #ef4444;    /* 高级绯红 */
+
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-app);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ================= 全局消息容器 ================= */
+        .toast-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            width: 100%;
+            max-width: 380px;
+            position: relative;
+            z-index: 10;
+        }
+
+        /* ================= 流光边框核心逻辑 ================= */
+        .toast-item {
+            position: relative;
+            background-color: var(--bg-toast-base); /* 基础边框颜色 */
+            border-radius: 12px; /* 外圆角 */
+            padding: 1px; /* 1px的Padding就是边框的宽度 */
+            box-shadow: var(--shadow-toast);
+            overflow: hidden; /* 将溢出的旋转光束裁切在圆角内 */
+            
+            /* 丝滑入场 */
+            animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateY(-20px) scale(0.95); opacity: 0; }
+            to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+
+        /* 旋转的光束 (使用圆锥渐变) */
+        .toast-item::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 300%; /* 足够大以覆盖长方形 */
+            height: 300%;
+            /* 核心：拖尾光束效果，前面透明，末端发光 */
+            background: conic-gradient(
+                transparent 0deg, 
+                transparent 260deg, 
+                var(--glow-color) 360deg
+            );
+            transform: translate(-50%, -50%) rotate(0deg);
+            animation: spin 3s linear infinite;
+            z-index: 0;
+        }
+
+        @keyframes spin {
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+
+        /* 内部内容区 (遮挡住光束的中心，只漏出 1px 的边缘) */
+        .toast-inner {
+            position: relative;
+            z-index: 1;
+            background-color: var(--bg-toast);
+            border-radius: 11px; /* 外圆角12px - 边框1px = 内圆角11px */
+            padding: 16px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        /* ================= 内容排版 ================= */
+        .toast-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            margin-top: 2px;
+            color: var(--glow-color); /* Icon 颜色呼应流光 */
+            /* 给 Icon 增加一点高级的光晕扩散 */
+            filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.1));
+        }
+
+        .toast-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .toast-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.4;
+        }
+
+        .toast-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .toast-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 4px;
+            margin-top: 0;
+            margin-right: -4px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s;
+        }
+        .toast-close:hover {
+            color: var(--text-primary);
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        /* ================= 定义四种状态的流光色 ================= */
+        
+        .toast-info { --glow-color: var(--glow-info); }
+        .toast-info .toast-icon { filter: drop-shadow(0 0 8px rgba(255,255,255,0.3)); }
+
+        .toast-success { --glow-color: var(--glow-success); }
+        .toast-success .toast-icon { filter: drop-shadow(0 0 8px rgba(16,185,129,0.3)); }
+
+        .toast-warn { --glow-color: var(--glow-warn); }
+        .toast-warn .toast-icon { filter: drop-shadow(0 0 8px rgba(245,158,11,0.3)); }
+
+        .toast-error { --glow-color: var(--glow-error); }
+        .toast-error .toast-icon { filter: drop-shadow(0 0 8px rgba(239,68,68,0.3)); }
+
+    </style>
+</head>
+<body>
+
+    <div class="toast-container">
+
+        <!-- 1. Info Message (极光白) -->
+        <div class="toast-item toast-info">
+            <div class="toast-inner">
+                <div class="toast-icon">
+                    <i data-lucide="sparkles" style="width: 18px; height: 18px;"></i>
+                </div>
+                <div class="toast-content">
+                    <div class="toast-title">Agent 工作流已启动</div>
+                    <div class="toast-desc">正在后台处理海量数据，您可以随时在任务中心查看进度。</div>
+                </div>
+                <button class="toast-close"><i data-lucide="x" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <!-- 2. Success Message (高级翠绿) -->
+        <div class="toast-item toast-success">
+            <div class="toast-inner">
+                <div class="toast-icon">
+                    <i data-lucide="check-circle" style="width: 18px; height: 18px;"></i>
+                </div>
+                <div class="toast-content">
+                    <div class="toast-title">API 密钥校验成功</div>
+                </div>
+                <button class="toast-close"><i data-lucide="x" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <!-- 3. Warning Message (克制琥珀) -->
+        <div class="toast-item toast-warn">
+            <div class="toast-inner">
+                <div class="toast-icon">
+                    <i data-lucide="triangle-alert" style="width: 18px; height: 18px;"></i>
+                </div>
+                <div class="toast-content">
+                    <div class="toast-title">模型上下文即将耗尽</div>
+                    <div class="toast-desc">当前对话已占用 115,000 Tokens，继续对话可能导致最早期记忆丢失。</div>
+                </div>
+                <button class="toast-close"><i data-lucide="x" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <!-- 4. Error Message (深邃红) -->
+        <div class="toast-item toast-error">
+            <div class="toast-inner">
+                <div class="toast-icon">
+                    <i data-lucide="shield-alert" style="width: 18px; height: 18px;"></i>
+                </div>
+                <div class="toast-content">
+                    <div class="toast-title">解析 AST 树失败</div>
+                    <div class="toast-desc">CodingAgent 无法解析 <code>/src/index.tsx</code>，请检查代码是否存在严重语法错误。</div>
+                </div>
+                <button class="toast-close"><i data-lucide="x" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        // 关闭按钮动画演示
+        document.querySelectorAll('.toast-close').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const toast = this.closest('.toast-item');
+                toast.style.transition = 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)';
+                toast.style.opacity = '0';
+                toast.style.transform = 'scale(0.95)';
+                setTimeout(() => toast.remove(), 300);
+            });
+        });
+    </script>
+</body>
+</html>

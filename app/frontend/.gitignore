@@ -1,0 +1,7 @@
+node_modules/
+dist/
+vite-dev.*.log
+tauri-dev.*.log
+verification/
+src-tauri/gen/
+src-tauri/target/

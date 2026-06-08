@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SuperAgent Streamlined Panel</title>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* ================= 核心 CSS 变量 ================= */
+        :root {
+            --bg-app: #000000;
+            --bg-user-msg: #0a0a0a;   /* 用户消息背景 */
+            --bg-code: #141414;       /* 代码块背景 */
+            
+            --text-primary: #f3f3f3;
+            --text-secondary: #8a8a8a;
+            --text-muted: #555555;
+            
+            --border-color: #222222;
+            --border-user: #333333;   /* 用户消息边框 */
+            
+            --icon-color: #777777;
+            --icon-hover: #ffffff;
+            
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* 浅色主题支持 (保留了架构上的支持) */
+        [data-theme="light"] {
+            --bg-app: #ffffff;
+            --bg-user-msg: #f9f9f9;
+            --bg-code: #f1f1f1;
+            
+            --text-primary: #111111;
+            --text-secondary: #666666;
+            --text-muted: #999999;
+            
+            --border-color: #e5e5e5;
+            --border-user: #dddddd;
+            
+            --icon-color: #888888;
+            --icon-hover: #111111;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-app);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px 100px 20px;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        /* ================= 架构 1: 消息面板容器 ================= */
+        .message-panel {
+            width: 100%;
+            max-width: 800px;
+            display: flex;
+            flex-direction: column;
+            gap: 40px; /* 对话回合之间拉开较大间距 */
+        }
+
+        /* ================= 架构 2: 消息 Group ================= */
+        .message-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .message-items-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 16px; /* 消息项之间的呼吸感间距 */
+        }
+
+        /* --- 底部 Action Icons --- */
+        .message-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .user-message .message-actions { justify-content: flex-end; }
+        .ai-message .message-actions { justify-content: flex-start; }
+
+        .action-btn {
+            background: transparent;
+            border: none;
+            color: var(--icon-color);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .action-btn:hover { background-color: var(--border-color); color: var(--icon-hover); }
+
+        /* ================= 架构 3: 消息 Items ================= */
+        
+        /* --- 用户消息专属样式 (带圆角边框) --- */
+        .user-bubble {
+            background-color: var(--bg-user-msg);
+            border: 1px solid var(--border-user);
+            border-radius: 12px;
+            padding: 16px 20px;
+            color: var(--text-primary);
+        }
+
+        /* --- 普通文本消息 (AI侧无边框) --- */
+        .item-text {
+            color: var(--text-primary);
+        }
+        .item-text p { margin-bottom: 12px; }
+        .item-text p:last-child { margin-bottom: 0; }
+        
+        /* 简单 Markdown 样式 */
+        .item-text code { 
+            background: var(--bg-code); 
+            padding: 3px 6px; 
+            border-radius: 4px; 
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; 
+            font-size: 13.5px; 
+        }
+        .item-text h3 { margin: 16px 0 8px 0; font-size: 16px; font-weight: 600; }
+        .item-text ul { padding-left: 20px; margin-bottom: 12px; }
+
+        /* --- Tools & Agent 通用流式无边框样式 --- */
+        .item-tool-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px; /* 比正文稍小 */
+            color: var(--text-secondary); /* 颜色偏灰 */
+        }
+
+        .tool-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
+        }
+
+        /* --- 动画：流光文字 (正在执行) --- */
+        @keyframes shimmer-text {
+            0% { background-position: -200% center; }
+            100% { background-position: 200% center; }
+        }
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+        
+        .state-running .tool-text {
+            background: linear-gradient(90deg, var(--text-secondary) 20%, var(--text-primary) 50%, var(--text-secondary) 80%);
+            background-size: 200% auto;
+            color: transparent;
+            -webkit-background-clip: text;
+            background-clip: text;
+            animation: shimmer-text 2s linear infinite;
+        }
+        .state-running .tool-icon svg {
+            animation: spin 1.5s linear infinite;
+            color: var(--text-primary);
+        }
+
+        /* 状态：完成 (极简灰) */
+        .state-completed .tool-text { color: var(--text-secondary); }
+        .state-completed .tool-icon svg { color: var(--text-muted); }
+
+        /* --- 可折叠的 Tools/Agent 控制 --- */
+        .item-collapsible {
+            display: flex;
+            flex-direction: column;
+            gap: 4px; /* 折叠头部和内容的间距 */
+        }
+        
+        .collapsible-trigger {
+            display: inline-flex; /* 宽度自适应内容 */
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            transition: opacity 0.2s;
+        }
+        .collapsible-trigger:hover { opacity: 0.8; }
+
+        .chevron-icon {
+            transition: transform 0.3s ease;
+            color: var(--icon-color);
+            margin-left: 4px;
+        }
+        .is-open > .collapsible-trigger .chevron-icon { transform: rotate(180deg); }
+
+        /* CSS Grid 丝滑动画折叠体 */
+        .collapsible-body-wrapper {
+            display: grid;
+            grid-template-rows: 0fr;
+            transition: grid-template-rows 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .is-open > .collapsible-body-wrapper {
+            grid-template-rows: 1fr;
+        }
+        .collapsible-body {
+            overflow: hidden;
+        }
+        
+        /* 折叠体内部内容 (左侧留一条极其极弱的引导线表示层级，或者单纯靠缩进) */
+        .collapsible-content {
+            margin-left: 8px; 
+            padding-left: 16px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            border-left: 1px solid var(--border-color); /* 极细极暗的引导线，区分父子关系 */
+            font-size: 13.5px;
+            color: var(--text-secondary);
+        }
+
+        /* 特别处理 Agent 内的嵌套间距，因为没有卡片了，纯靠缩进排版 */
+        .item-agent > .collapsible-body-wrapper > .collapsible-body > .collapsible-content {
+            border-left: 2px solid var(--border-color); /* Agent层级引导线稍微明显一点 */
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <main class="message-panel">
+
+        <!-- ======================= 对话回合 1：基础问答与单一工具调用 ======================= -->
+        
+        <div class="message-group user-message">
+            <div class="message-items-wrapper">
+                <!-- 用户消息：圆角边框气泡 -->
+                <div class="user-bubble">
+                    <p>帮我查一下今天深圳的天气，然后推荐几个适合今天天气的户外活动。</p>
+                </div>
+            </div>
+            <div class="message-actions">
+                <button class="action-btn" title="编辑"><i data-lucide="edit-2" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="复制"><i data-lucide="copy" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <div class="message-group ai-message">
+            <div class="message-items-wrapper">
+                
+                <!-- AI 消息流：不可折叠 Tools (已完成) -->
+                <div class="item-tool-row state-completed">
+                    <span class="tool-icon"><i data-lucide="cloud-lightning" style="width: 14px; height: 14px;"></i></span>
+                    <span class="tool-text">调用 Weather_API 获取深圳实时天气... (已完成)</span>
+                </div>
+
+                <!-- AI 消息流：可折叠 Tools (已完成) -->
+                <div class="item-collapsible state-completed">
+                    <div class="collapsible-trigger" onclick="toggleCollapse(this)">
+                        <div class="item-tool-row">
+                            <span class="tool-icon"><i data-lucide="map-pin" style="width: 14px; height: 14px;"></i></span>
+                            <span class="tool-text">检索深圳户外活动地点推荐</span>
+                        </div>
+                        <i data-lucide="chevron-down" class="chevron-icon" style="width: 14px; height: 14px;"></i>
+                    </div>
+                    <div class="collapsible-body-wrapper">
+                        <div class="collapsible-body">
+                            <div class="collapsible-content">
+                                { "locations": ["深圳湾公园", "莲花山公园", "人才公园"], "recommendation_score": 0.95 }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI 消息流：纯文本回复 (无任何边框) -->
+                <div class="item-text">
+                    <p>今天深圳的天气情况为 <strong>多云转晴，气温 22°C - 28°C</strong>，微风，空气质量优。非常适合进行户外活动！</p>
+                    <p>根据今天的天气，我为您推荐以下几个户外活动：</p>
+                    <ul>
+                        <li><strong>深圳湾公园骑行或散步</strong>：今天有微风，沿着海滨栈道骑行会非常惬意。</li>
+                        <li><strong>莲花山公园放风筝</strong>：阳光明媚且不燥热，草坪非常适合全家人休闲。</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="message-actions">
+                <button class="action-btn" title="编辑"><i data-lucide="edit-2" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="复制"><i data-lucide="copy" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="创建分支"><i data-lucide="git-branch" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <!-- ======================= 对话回合 2：复杂 Agent 任务嵌套 ======================= -->
+        
+        <div class="message-group user-message">
+            <div class="message-items-wrapper">
+                <div class="user-bubble">
+                    <p>我们需要重构项目的用户鉴权模块。请让架构专家 Agent 帮我分析现有的代码库，找出潜在的安全漏洞，并写一份详细的重构指南Markdown，包含必要的代码示例。</p>
+                </div>
+            </div>
+            <div class="message-actions">
+                <button class="action-btn" title="编辑"><i data-lucide="edit-2" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="复制"><i data-lucide="copy" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+        <div class="message-group ai-message">
+            <div class="message-items-wrapper">
+                
+                <!-- 顶层逻辑判定 Tool -->
+                <div class="item-tool-row state-completed">
+                    <span class="tool-icon"><i data-lucide="brain-circuit" style="width: 14px; height: 14px;"></i></span>
+                    <span class="tool-text">正在解析任务意图，分配至 ArchitectureAgent...</span>
+                </div>
+
+                <!-- Agent 消息：嵌套容器 (状态：正在运行，默认展开演示) -->
+                <div class="item-collapsible item-agent state-running is-open">
+                    <div class="collapsible-trigger" onclick="toggleCollapse(this)">
+                        <div class="item-tool-row">
+                            <span class="tool-icon"><i data-lucide="loader-2" style="width: 14px; height: 14px;"></i></span>
+                            <span class="tool-text">ArchitectureAgent 正在执行代码库分析与重构规划...</span>
+                        </div>
+                        <i data-lucide="chevron-down" class="chevron-icon" style="width: 14px; height: 14px;"></i>
+                    </div>
+                    
+                    <!-- Agent 内容折叠体，内部纯靠缩进和引导线布局，无卡片框 -->
+                    <div class="collapsible-body-wrapper">
+                        <div class="collapsible-body">
+                            <div class="collapsible-content">
+                                
+                                <!-- 子 Agent 里的不可折叠 Tool -->
+                                <div class="item-tool-row state-completed">
+                                    <span class="tool-icon"><i data-lucide="folder-search" style="width: 14px; height: 14px;"></i></span>
+                                    <span class="tool-text">扫描本地仓库 /src/auth 目录</span>
+                                </div>
+
+                                <!-- 子 Agent 里的可折叠 Tool -->
+                                <div class="item-collapsible state-completed">
+                                    <div class="collapsible-trigger" onclick="toggleCollapse(this)">
+                                        <div class="item-tool-row">
+                                            <span class="tool-icon"><i data-lucide="shield-alert" style="width: 14px; height: 14px;"></i></span>
+                                            <span class="tool-text">运行静态安全分析 (SAST)</span>
+                                        </div>
+                                        <i data-lucide="chevron-down" class="chevron-icon" style="width: 14px; height: 14px;"></i>
+                                    </div>
+                                    <div class="collapsible-body-wrapper">
+                                        <div class="collapsible-body">
+                                            <div class="collapsible-content" style="color: var(--text-muted); font-family: monospace; font-size: 12px;">
+                                                > 警告：在 jwtUtils.js 第 45 行发现硬编码的 JWT_SECRET<br>
+                                                > 警告：loginController.js 中缺少密码暴力破解防范机制<br>
+                                                > 提示：Token 刷新机制未实现黑名单策略
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 子 Agent 内部的正在执行 Tool -->
+                                <div class="item-tool-row state-running">
+                                    <span class="tool-icon"><i data-lucide="pen-tool" style="width: 14px; height: 14px;"></i></span>
+                                    <span class="tool-text">正在结合最佳实践生成重构指南与示例代码...</span>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+                </div> <!-- /Agent 结束 -->
+
+                <!-- AI 最终给出的文字消息 -->
+                <div class="item-text">
+                    <p>我已安排架构专家 Agent 对您的项目鉴权模块进行了深度扫描。目前发现了几个关键风险，以下是为您生成的重构指南：</p>
+                    
+                    <h3>核心安全问题点</h3>
+                    <ul>
+                        <li><strong>密钥泄露风险</strong>：目前 JWT Secret 是硬编码在代码里的，极其危险。</li>
+                        <li><strong>暴力破解防护缺失</strong>：登录接口没有设置限流机制（Rate Limiting）。</li>
+                    </ul>
+
+                    <h3>推荐的重构方案 (Node.js/Express)</h3>
+                    <p>首先，必须将配置迁移至环境变量 <code>.env</code> 中，并使用 <code>bcrypt</code> 强化密码校验过程：</p>
+                    
+                    <pre><code style="display:block; padding: 12px; margin: 12px 0;">import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
+
+// 推荐的登录控制器重构
+export const login = async (req, res) => {
+  const { email, password } = req.body;
+  // 1. 查找用户
+  const user = await UserModel.findOne({ email });
+  if (!user) return res.status(401).send("认证失败");
+
+  // 2. 校验哈希密码
+  const validPassword = await bcrypt.compare(password, user.password);
+  if (!validPassword) return res.status(401).send("认证失败");
+
+  // 3. 签发 Token (从环境变量读取密钥)
+  const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET, {
+    expiresIn: '1h'
+  });
+
+  res.header('auth-token', token).send(token);
+};</code></pre>
+                    <p>关于 Rate Limit 机制，我建议您引入 <code>express-rate-limit</code> 中间件直接在路由层进行拦截。如果您需要我为您搭建一套完整的 Redis 分布式限流方案，请告诉我。</p>
+                </div>
+            </div>
+
+            <div class="message-actions">
+                <button class="action-btn" title="编辑"><i data-lucide="edit-2" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="复制"><i data-lucide="copy" style="width: 14px; height: 14px;"></i></button>
+                <button class="action-btn" title="创建分支"><i data-lucide="git-branch" style="width: 14px; height: 14px;"></i></button>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        // 点击触发展开/折叠逻辑
+        function toggleCollapse(element) {
+            const parentItem = element.closest('.item-collapsible');
+            parentItem.classList.toggle('is-open');
+        }
+
+        // 模拟 Agent 任务完成效果的演示
+        setTimeout(() => {
+            const runningTools = document.querySelectorAll('.state-running');
+            runningTools.forEach(node => {
+                // 修改状态类
+                node.classList.remove('state-running');
+                node.classList.add('state-completed');
+                
+                // 替换加载动画图标为完成图标
+                const iconContainer = node.querySelector('.tool-icon');
+                if(iconContainer) {
+                    iconContainer.innerHTML = '<i data-lucide="check" style="width: 14px; height: 14px;"></i>';
+                }
+                
+                // 替换文本
+                const textSpan = node.querySelector('.tool-text');
+                if(textSpan) {
+                    textSpan.innerText = textSpan.innerText.replace("正在", "已完成：").replace("...", "");
+                }
+            });
+            // 重新渲染新插入的图标
+            lucide.createIcons();
+        }, 12000); // 12秒后所有 Running 状态变更为已完成
+    </script>
+</body>
+</html>

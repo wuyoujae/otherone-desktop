@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+app/frontend/dist/
+
+# Tauri / Rust
+app/frontend/src-tauri/target/
+app/frontend/src-tauri/gen/
+
+# Logs
+*.log
+app/frontend/vite-dev.*.log
+app/frontend/tauri-dev.*.log
+
+# Verification output
+app/frontend/verification/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.tmp

@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docs | Otherone</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@300;500;700&display=swap" rel="stylesheet">
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        :root {
+            --bg-page: #F7F7F5;
+            --bg-nav: rgba(247, 247, 245, 0.72);
+            --text-dark: #0A0A0A;
+            --text-muted: #666666;
+            --border-light: rgba(0, 0, 0, 0.08);
+            --border-medium: rgba(0, 0, 0, 0.16);
+            --font-display: 'Space Grotesk', sans-serif;
+            --font-body: 'Inter', sans-serif;
+            --bezier-award: cubic-bezier(0.19, 1, 0.22, 1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-page);
+            color: var(--text-dark);
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        button,
+        input {
+            font-family: inherit;
+        }
+
+        .bg-system {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .bg-grid {
+            position: absolute;
+            inset: 0;
+            background-size: 50px 50px;
+            background-image:
+                linear-gradient(to right, var(--border-light) 1px, transparent 1px),
+                linear-gradient(to bottom, var(--border-light) 1px, transparent 1px);
+            mask-image: radial-gradient(circle at center, black 30%, transparent 90%);
+            -webkit-mask-image: radial-gradient(circle at center, black 30%, transparent 90%);
+        }
+
+        .blob {
+            position: absolute;
+            top: 8%;
+            right: 4%;
+            width: 58vw;
+            height: 58vw;
+            max-width: 760px;
+            max-height: 760px;
+            background: linear-gradient(120deg, #e0c3fc 0%, #8ec5fc 100%);
+            border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+            filter: blur(84px);
+            opacity: 0.58;
+            animation: morphBlob 15s ease-in-out infinite alternate, spinBlob 25s linear infinite;
+        }
+
+        @keyframes morphBlob {
+            0% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; }
+            34% { border-radius: 70% 30% 50% 50% / 30% 30% 70% 70%; }
+            67% { border-radius: 100% 60% 60% 100% / 100% 100% 60% 60%; }
+            100% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; }
+        }
+
+        @keyframes spinBlob {
+            100% { transform: rotate(360deg); }
+        }
+
+        .navbar {
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: calc(100% - 48px);
+            max-width: 1400px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            background: var(--bg-nav);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-light);
+            border-radius: 100px;
+            z-index: 100;
+        }
+
+        .nav-logo {
+            font-family: var(--font-display);
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .nav-logo-bean {
+            width: 22px;
+            height: 22px;
+            display: block;
+            flex-shrink: 0;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .nav-link {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .nav-link:hover,
+        .nav-link.active {
+            color: var(--text-dark);
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .social-icons {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .social-icon {
+            width: 19px;
+            height: 19px;
+            color: var(--text-dark);
+            cursor: pointer;
+            transition: transform 0.3s var(--bezier-award), opacity 0.3s;
+        }
+
+        .social-icon:hover {
+            transform: translateY(-3px);
+            opacity: 0.7;
+        }
+
+        .btn-signup {
+            background-color: var(--text-dark);
+            color: #fff;
+            padding: 10px 24px;
+            border-radius: 100px;
+            font-size: 13px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: background-color 0.3s, transform 0.3s var(--bezier-award);
+        }
+
+        .btn-signup:hover {
+            background-color: #333;
+            transform: scale(1.05);
+        }
+
+        .docs-shell {
+            max-width: 1480px;
+            margin: 0 auto;
+            padding: 126px 5vw 120px;
+            display: grid;
+            grid-template-columns: 260px minmax(0, 820px) 230px;
+            gap: 56px;
+            align-items: start;
+        }
+
+        .docs-sidebar {
+            position: sticky;
+            top: 112px;
+            height: calc(100vh - 136px);
+            padding-right: 10px;
+            overflow-y: auto;
+        }
+
+        .docs-sidebar::-webkit-scrollbar,
+        .docs-toc::-webkit-scrollbar {
+            width: 0;
+        }
+
+        .docs-search {
+            position: relative;
+            margin-bottom: 28px;
+        }
+
+        .docs-search input {
+            width: 100%;
+            height: 46px;
+            border-radius: 14px;
+            border: 1px solid var(--border-light);
+            background: rgba(255,255,255,0.68);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            padding: 0 42px 0 42px;
+            outline: none;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-dark);
+            transition: border-color 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        .docs-search input:focus {
+            border-color: rgba(0,0,0,0.24);
+            box-shadow: 0 14px 38px rgba(0,0,0,0.06);
+        }
+
+        .docs-search svg {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 17px;
+            height: 17px;
+            color: var(--text-muted);
+        }
+
+        .shortcut {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 11px;
+            color: var(--text-muted);
+            border: 1px solid var(--border-light);
+            border-radius: 7px;
+            padding: 3px 6px;
+            background: rgba(255,255,255,0.6);
+        }
+
+        .docs-nav-group {
+            margin-bottom: 30px;
+        }
+
+        .docs-nav-title {
+            font-family: var(--font-display);
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .docs-nav-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .docs-nav-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 36px;
+            padding: 8px 10px;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            border-radius: 10px;
+            transition: color 0.25s ease, background 0.25s ease, transform 0.25s var(--bezier-award);
+        }
+
+        .docs-nav-link svg {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .docs-nav-link:hover,
+        .docs-nav-link.active {
+            color: var(--text-dark);
+            background: rgba(0,0,0,0.045);
+            transform: translateX(3px);
+        }
+
+        .docs-main {
+            min-width: 0;
+        }
+
+        .docs-hero {
+            padding: 26px 0 54px;
+            border-bottom: 1px solid var(--border-light);
+            margin-bottom: 54px;
+        }
+
+        .docs-kicker {
+            font-family: var(--font-display);
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+            margin-bottom: 18px;
+        }
+
+        .docs-title {
+            font-family: var(--font-display);
+            font-size: clamp(54px, 7vw, 112px);
+            line-height: 0.9;
+            letter-spacing: -3.5px;
+            text-transform: uppercase;
+            margin-bottom: 24px;
+        }
+
+        .docs-title .line {
+            display: block;
+            overflow: hidden;
+        }
+
+        .docs-title .line span {
+            display: block;
+            transform: translateY(110%);
+            animation: textReveal 1.1s var(--bezier-award) forwards;
+        }
+
+        .docs-title .line:nth-child(2) span {
+            animation-delay: 0.08s;
+        }
+
+        .text-outline {
+            color: transparent;
+            -webkit-text-stroke: 2px var(--text-dark);
+        }
+
+        @keyframes textReveal {
+            to { transform: translateY(0); }
+        }
+
+        .docs-desc {
+            color: var(--text-muted);
+            font-size: 20px;
+            line-height: 1.6;
+            font-weight: 500;
+            max-width: 720px;
+            opacity: 0;
+            transform: translateY(18px);
+            animation: fadeUp 1s 0.25s var(--bezier-award) forwards;
+        }
+
+        @keyframes fadeUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .quick-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            margin-top: 34px;
+        }
+
+        .quick-card {
+            border: 1px solid var(--border-light);
+            background: rgba(255,255,255,0.58);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 22px;
+            padding: 20px;
+            text-decoration: none;
+            color: var(--text-dark);
+            transition: transform 0.35s var(--bezier-award), border-color 0.35s ease, background 0.35s ease;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeUp 0.9s 0.38s var(--bezier-award) forwards;
+        }
+
+        .quick-card:nth-child(2) {
+            animation-delay: 0.45s;
+        }
+
+        .quick-card:nth-child(3) {
+            animation-delay: 0.52s;
+        }
+
+        .quick-card:nth-child(4) {
+            animation-delay: 0.59s;
+        }
+
+        .quick-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(0,0,0,0.18);
+            background: rgba(255,255,255,0.86);
+        }
+
+        .quick-card-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+
+        .quick-card-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            background: var(--text-dark);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .quick-card-icon svg {
+            width: 17px;
+            height: 17px;
+        }
+
+        .quick-card h3 {
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+
+        .quick-card p {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.55;
+            font-weight: 500;
+        }
+
+        .docs-section {
+            scroll-margin-top: 120px;
+            padding: 0 0 58px;
+            margin-bottom: 58px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .docs-section:last-child {
+            border-bottom: none;
+        }
+
+        .docs-section h2 {
+            font-family: var(--font-display);
+            font-size: clamp(34px, 4vw, 58px);
+            line-height: 0.95;
+            letter-spacing: -1.8px;
+            margin-bottom: 20px;
+        }
+
+        .docs-section h3 {
+            font-family: var(--font-display);
+            font-size: 26px;
+            letter-spacing: -0.7px;
+            margin: 36px 0 14px;
+        }
+
+        .docs-section p {
+            color: var(--text-muted);
+            font-size: 16px;
+            line-height: 1.75;
+            font-weight: 500;
+            margin-bottom: 18px;
+        }
+
+        .docs-section ul,
+        .docs-section ol {
+            padding-left: 20px;
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1.8;
+            font-weight: 500;
+            margin: 16px 0 22px;
+        }
+
+        .docs-section li {
+            margin-bottom: 8px;
+        }
+
+        .callout {
+            display: grid;
+            grid-template-columns: 38px minmax(0, 1fr);
+            gap: 14px;
+            border: 1px solid var(--border-light);
+            background: rgba(255,255,255,0.62);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            border-radius: 22px;
+            padding: 18px;
+            margin: 26px 0;
+        }
+
+        .callout-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 13px;
+            background: var(--text-dark);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .callout-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .callout strong {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        .callout p {
+            margin: 0;
+            font-size: 14px;
+        }
+
+        .code-block {
+            border-radius: 24px;
+            background: #0c0c0d;
+            color: #fff;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 36px 90px rgba(0,0,0,0.16);
+            margin: 26px 0;
+        }
+
+        .code-header {
+            height: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.035);
+        }
+
+        .code-dots {
+            display: flex;
+            gap: 7px;
+        }
+
+        .code-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.24);
+        }
+
+        .code-label {
+            color: rgba(255,255,255,0.48);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        pre {
+            margin: 0;
+            padding: 22px;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.8;
+            color: rgba(255,255,255,0.82);
+        }
+
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        .inline-code {
+            background: rgba(0,0,0,0.055);
+            border: 1px solid var(--border-light);
+            padding: 2px 6px;
+            border-radius: 7px;
+            color: var(--text-dark);
+            font-size: 0.92em;
+        }
+
+        .step-list {
+            counter-reset: step;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            margin: 26px 0;
+        }
+
+        .step-item {
+            counter-increment: step;
+            display: grid;
+            grid-template-columns: 42px minmax(0, 1fr);
+            gap: 16px;
+        }
+
+        .step-number {
+            width: 42px;
+            height: 42px;
+            border-radius: 14px;
+            background: var(--text-dark);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-display);
+            font-weight: 700;
+        }
+
+        .step-number::before {
+            content: counter(step);
+        }
+
+        .step-content h4 {
+            font-size: 16px;
+            margin-bottom: 7px;
+        }
+
+        .step-content p {
+            font-size: 14px;
+            margin: 0;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--border-light);
+            border-radius: 22px;
+            background: rgba(255,255,255,0.54);
+            margin: 26px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 620px;
+        }
+
+        th,
+        td {
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--border-light);
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            font-family: var(--font-display);
+            font-size: 12px;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        td {
+            color: var(--text-muted);
+            font-weight: 500;
+            line-height: 1.5;
+        }
+
+        td:first-child {
+            color: var(--text-dark);
+            font-weight: 700;
+        }
+
+        .docs-toc {
+            position: sticky;
+            top: 112px;
+            height: calc(100vh - 136px);
+            overflow-y: auto;
+            padding-left: 22px;
+            border-left: 1px solid var(--border-light);
+        }
+
+        .toc-title {
+            font-family: var(--font-display);
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .toc-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .toc-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1.4;
+            padding: 8px 0;
+            transition: color 0.25s ease, transform 0.25s var(--bezier-award);
+        }
+
+        .toc-link:hover,
+        .toc-link.active {
+            color: var(--text-dark);
+            transform: translateX(3px);
+        }
+
+        .toc-card {
+            margin-top: 30px;
+            border: 1px solid var(--border-light);
+            border-radius: 20px;
+            background: rgba(255,255,255,0.56);
+            padding: 18px;
+        }
+
+        .toc-card h4 {
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .toc-card p {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.55;
+            font-weight: 500;
+            margin-bottom: 14px;
+        }
+
+        .toc-card a {
+            color: var(--text-dark);
+            font-size: 13px;
+            font-weight: 800;
+            text-decoration: none;
+            border-bottom: 1px solid rgba(0,0,0,0.2);
+        }
+
+        .mobile-docs-nav {
+            display: none;
+        }
+
+        @media (max-width: 1180px) {
+            .docs-shell {
+                grid-template-columns: 230px minmax(0, 1fr);
+                gap: 42px;
+            }
+
+            .docs-toc {
+                display: none;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .nav-links,
+            .social-icons {
+                display: none;
+            }
+
+            .docs-shell {
+                display: block;
+                padding-top: 112px;
+            }
+
+            .docs-sidebar {
+                display: none;
+            }
+
+            .mobile-docs-nav {
+                display: block;
+                position: sticky;
+                top: 92px;
+                z-index: 20;
+                margin-bottom: 32px;
+            }
+
+            .mobile-docs-select {
+                width: 100%;
+                height: 50px;
+                border-radius: 16px;
+                border: 1px solid var(--border-light);
+                background: rgba(255,255,255,0.82);
+                backdrop-filter: blur(18px);
+                -webkit-backdrop-filter: blur(18px);
+                color: var(--text-dark);
+                padding: 0 16px;
+                font-weight: 700;
+                outline: none;
+            }
+
+            .docs-title {
+                letter-spacing: -2.5px;
+            }
+
+            .quick-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .navbar {
+                top: 16px;
+                width: calc(100% - 32px);
+                padding: 0 18px;
+            }
+
+            .btn-signup {
+                padding: 9px 16px;
+            }
+
+            .docs-shell {
+                padding-left: 18px;
+                padding-right: 18px;
+            }
+
+            .docs-desc {
+                font-size: 17px;
+            }
+
+            .docs-section h2 {
+                letter-spacing: -1.2px;
+            }
+
+            .step-item,
+            .callout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="bg-system">
+        <div class="bg-grid"></div>
+        <div class="blob"></div>
+    </div>
+
+    <header class="navbar">
+        <div class="nav-logo">
+            <svg class="nav-logo-bean" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <circle cx="128" cy="128" r="96" fill="white" stroke="black" stroke-width="14" />
+                <circle cx="96" cy="112" r="15" fill="black" />
+                <circle cx="160" cy="112" r="15" fill="black" />
+            </svg>
+            Otherone
+        </div>
+
+        <nav class="nav-links">
+            <a href="./index.html" class="nav-link">Home</a>
+            <a href="./index.html#showcase" class="nav-link">Features</a>
+            <a href="./pricing.html" class="nav-link">Pricing</a>
+            <a href="./changelog.html" class="nav-link">Changelog</a>
+            <a href="./docs.html" class="nav-link active">Docs</a>
+        </nav>
+
+        <div class="nav-actions">
+            <div class="social-icons">
+                <svg class="social-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="X">
+                    <path d="M4 4l11.8 16H20L8.2 4H4z"></path>
+                    <path d="M4 20L10.8 13.2"></path>
+                    <path d="M13.2 10.8L20 4"></path>
+                </svg>
+
+                <svg class="social-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-label="Discord">
+                    <path d="M7.5 8.2C9 7.5 10.5 7.2 12 7.2s3 .3 4.5 1"></path>
+                    <path d="M8.2 16.5c1 .7 2.3 1.1 3.8 1.1s2.8-.4 3.8-1.1"></path>
+                    <path d="M9 13h.01"></path>
+                    <path d="M15 13h.01"></path>
+                    <path d="M6.2 5.4C4.4 7.3 3.5 10.1 3.5 13.8c0 2.2 1.8 4 4 4l1.1-1.8"></path>
+                    <path d="M17.8 5.4c1.8 1.9 2.7 4.7 2.7 8.4 0 2.2-1.8 4-4 4L15.4 16"></path>
+                </svg>
+
+                <svg class="social-icon" data-lucide="github" aria-label="GitHub"></svg>
+            </div>
+
+            <div style="width: 1px; height: 20px; background-color: var(--border-light);"></div>
+
+            <a href="#" class="btn-signup">Get Started</a>
+        </div>
+    </header>
+
+    <div class="docs-shell">
+
+        <aside class="docs-sidebar">
+            <div class="docs-search">
+                <i data-lucide="search"></i>
+                <input type="text" placeholder="Search docs..." id="docsSearch">
+                <span class="shortcut">⌘K</span>
+            </div>
+
+            <div class="docs-nav-group">
+                <div class="docs-nav-title">Getting started</div>
+                <div class="docs-nav-list">
+                    <a href="#introduction" class="docs-nav-link active"><i data-lucide="book-open"></i> Introduction</a>
+                    <a href="#installation" class="docs-nav-link"><i data-lucide="download"></i> Installation</a>
+                    <a href="#first-task" class="docs-nav-link"><i data-lucide="play"></i> First task</a>
+                    <a href="#workspace" class="docs-nav-link"><i data-lucide="layout-dashboard"></i> Workspace</a>
+                </div>
+            </div>
+
+            <div class="docs-nav-group">
+                <div class="docs-nav-title">Core concepts</div>
+                <div class="docs-nav-list">
+                    <a href="#agents" class="docs-nav-link"><i data-lucide="bot"></i> Agents</a>
+                    <a href="#memory" class="docs-nav-link"><i data-lucide="brain"></i> Memory</a>
+                    <a href="#tools" class="docs-nav-link"><i data-lucide="wrench"></i> Tools</a>
+                    <a href="#review" class="docs-nav-link"><i data-lucide="shield-check"></i> Review model</a>
+                </div>
+            </div>
+
+            <div class="docs-nav-group">
+                <div class="docs-nav-title">Reference</div>
+                <div class="docs-nav-list">
+                    <a href="#cli" class="docs-nav-link"><i data-lucide="terminal"></i> CLI</a>
+                    <a href="#config" class="docs-nav-link"><i data-lucide="settings"></i> Config</a>
+                    <a href="#api" class="docs-nav-link"><i data-lucide="code-2"></i> API</a>
+                </div>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+
+            <div class="mobile-docs-nav">
+                <select class="mobile-docs-select" id="mobileDocsSelect">
+                    <option value="#introduction">Introduction</option>
+                    <option value="#installation">Installation</option>
+                    <option value="#first-task">First task</option>
+                    <option value="#workspace">Workspace</option>
+                    <option value="#agents">Agents</option>
+                    <option value="#memory">Memory</option>
+                    <option value="#tools">Tools</option>
+                    <option value="#review">Review model</option>
+                    <option value="#cli">CLI</option>
+                    <option value="#config">Config</option>
+                    <option value="#api">API</option>
+                </select>
+            </div>
+
+            <section class="docs-hero">
+                <div class="docs-kicker">Documentation</div>
+                <h1 class="docs-title">
+                    <span class="line"><span>Build with</span></span>
+                    <span class="line"><span class="text-outline">Otherone.</span></span>
+                </h1>
+                <p class="docs-desc">
+                    Learn how to install Otherone, create autonomous workflows, connect tools, manage project memory, and keep every agent action reviewable.
+                </p>
+
+                <div class="quick-grid">
+                    <a href="#installation" class="quick-card">
+                        <div class="quick-card-top">
+                            <div class="quick-card-icon"><i data-lucide="download"></i></div>
+                            <i data-lucide="arrow-right" style="width:17px;height:17px;"></i>
+                        </div>
+                        <h3>Install the app</h3>
+                        <p>Set up Otherone on macOS, Windows, or Linux and connect your first workspace.</p>
+                    </a>
+
+                    <a href="#first-task" class="quick-card">
+                        <div class="quick-card-top">
+                            <div class="quick-card-icon"><i data-lucide="play"></i></div>
+                            <i data-lucide="arrow-right" style="width:17px;height:17px;"></i>
+                        </div>
+                        <h3>Run your first task</h3>
+                        <p>Give the agent a goal, review its plan, and approve the first execution step.</p>
+                    </a>
+
+                    <a href="#tools" class="quick-card">
+                        <div class="quick-card-top">
+                            <div class="quick-card-icon"><i data-lucide="wrench"></i></div>
+                            <i data-lucide="arrow-right" style="width:17px;height:17px;"></i>
+                        </div>
+                        <h3>Connect tools</h3>
+                        <p>Route agent actions through files, terminals, browsers, plugins, and workflows.</p>
+                    </a>
+
+                    <a href="#api" class="quick-card">
+                        <div class="quick-card-top">
+                            <div class="quick-card-icon"><i data-lucide="code-2"></i></div>
+                            <i data-lucide="arrow-right" style="width:17px;height:17px;"></i>
+                        </div>
+                        <h3>Use the API</h3>
+                        <p>Trigger runs, inspect task state, and integrate Otherone into your product stack.</p>
+                    </a>
+                </div>
+            </section>
+
+            <section class="docs-section" id="introduction">
+                <h2>Introduction</h2>
+                <p>
+                    Otherone is a desktop-grade autonomous workspace. It gives agents access to project context, tools, review checkpoints, and persistent memory while keeping important actions visible.
+                </p>
+                <p>
+                    The workspace is designed around a simple loop: describe a goal, let the agent plan, review the plan, approve actions, and keep the resulting context available for future work.
+                </p>
+
+                <div class="callout">
+                    <div class="callout-icon"><i data-lucide="sparkles"></i></div>
+                    <div>
+                        <strong>Designed for real work</strong>
+                        <p>Otherone is not just a chat window. It is a structured environment for planning, execution, tool orchestration, and human review.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="docs-section" id="installation">
+                <h2>Installation</h2>
+                <p>
+                    Download the desktop app for your operating system, then sign in or create a local workspace. Otherone can run with local project access and optional cloud sync.
+                </p>
+
+                <div class="step-list">
+                    <div class="step-item">
+                        <div class="step-number"></div>
+                        <div class="step-content">
+                            <h4>Download Otherone</h4>
+                            <p>Install the macOS, Windows, or Linux build from the download menu on the website.</p>
+                        </div>
+                    </div>
+
+                    <div class="step-item">
+                        <div class="step-number"></div>
+                        <div class="step-content">
+                            <h4>Create a workspace</h4>
+                            <p>Start with a personal workspace or connect a team workspace if your organization already uses Otherone.</p>
+                        </div>
+                    </div>
+
+                    <div class="step-item">
+                        <div class="step-number"></div>
+                        <div class="step-content">
+                            <h4>Attach a project</h4>
+                            <p>Select a local folder so the agent can inspect relevant files and generate context-aware plans.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">terminal</div>
+                    </div>
+                    <pre><code># Optional CLI install
+npm install -g otherone
+
+# Authenticate the local workspace
+otherone login
+
+# Attach the current project
+otherone workspace attach .</code></pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="first-task">
+                <h2>Run your first task</h2>
+                <p>
+                    A task is a goal-driven agent run. Every task starts with a plain-language instruction and becomes a plan with visible steps.
+                </p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">example prompt</div>
+                    </div>
+                    <pre><code>Review the authentication module.
+Find security risks, propose fixes, and wait for approval before changing files.</code></pre>
+                </div>
+
+                <p>
+                    The agent will scan context, produce an execution plan, identify files or tools it needs, and ask for confirmation before applying sensitive changes.
+                </p>
+            </section>
+
+            <section class="docs-section" id="workspace">
+                <h2>Workspace structure</h2>
+                <p>
+                    A workspace contains projects, tasks, memory, tools, plugins, and review history. It is the boundary where agents understand what they can inspect and what they can modify.
+                </p>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Object</th>
+                                <th>Purpose</th>
+                                <th>Typical use</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Project</td>
+                                <td>Local or remote files available to the agent.</td>
+                                <td>Code review, refactor, research, documentation.</td>
+                            </tr>
+                            <tr>
+                                <td>Task</td>
+                                <td>A goal-driven run with plan, actions, and results.</td>
+                                <td>Fix a bug, summarize a repo, create a workflow.</td>
+                            </tr>
+                            <tr>
+                                <td>Memory</td>
+                                <td>Persistent context from decisions and prior work.</td>
+                                <td>Keep long-running projects coherent.</td>
+                            </tr>
+                            <tr>
+                                <td>Tool</td>
+                                <td>An approved capability the agent can request.</td>
+                                <td>Terminal, file edits, browser, plugins.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="docs-section" id="agents">
+                <h2>Agents</h2>
+                <p>
+                    Agents are specialized execution units. Each agent can plan, inspect context, request tools, and produce structured outputs.
+                </p>
+
+                <h3>Common agent types</h3>
+                <ul>
+                    <li><strong>Architecture Agent:</strong> inspects system design, dependencies, and project structure.</li>
+                    <li><strong>Code Agent:</strong> proposes patches, refactors modules, and validates implementation details.</li>
+                    <li><strong>Research Agent:</strong> gathers and organizes information into structured summaries.</li>
+                    <li><strong>Workflow Agent:</strong> coordinates repeatable multi-step processes.</li>
+                </ul>
+            </section>
+
+            <section class="docs-section" id="memory">
+                <h2>Memory</h2>
+                <p>
+                    Memory helps Otherone preserve decisions, unresolved tasks, assumptions, and project-specific knowledge across sessions.
+                </p>
+
+                <div class="callout">
+                    <div class="callout-icon"><i data-lucide="brain"></i></div>
+                    <div>
+                        <strong>Memory is scoped</strong>
+                        <p>Workspace memory is scoped to the current workspace. Project-specific details should not leak into unrelated workspaces.</p>
+                    </div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">memory.json</div>
+                    </div>
+                    <pre><code>{
+  "workspace": "otherone-web",
+  "decisions": [
+    "Use lightweight SVG for brand assets",
+    "Keep pricing cards minimal and conversion-focused"
+  ],
+  "open_tasks": [
+    "Finalize docs page",
+    "Connect changelog entries to release data"
+  ]
+}</code></pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="tools">
+                <h2>Tools</h2>
+                <p>
+                    Tools are capabilities agents can request. Otherone keeps tool calls visible so you can inspect what the agent wants to do before it acts.
+                </p>
+
+                <h3>Tool permissions</h3>
+                <p>
+                    Every tool can be configured as <span class="inline-code">read-only</span>, <span class="inline-code">approval required</span>, or <span class="inline-code">auto-run</span>. Sensitive operations should remain approval-based.
+                </p>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Tool</th>
+                                <th>Permission</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>File system</td>
+                                <td>Approval required</td>
+                                <td>Read, create, or modify files inside approved project folders.</td>
+                            </tr>
+                            <tr>
+                                <td>Terminal</td>
+                                <td>Approval required</td>
+                                <td>Run commands and inspect output with review history.</td>
+                            </tr>
+                            <tr>
+                                <td>Browser</td>
+                                <td>Read-only</td>
+                                <td>Inspect pages or UI state during research and testing.</td>
+                            </tr>
+                            <tr>
+                                <td>Plugins</td>
+                                <td>Configurable</td>
+                                <td>Connect external services and custom workflows.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="docs-section" id="review">
+                <h2>Review model</h2>
+                <p>
+                    Otherone uses a review-first model. The agent can propose plans and request actions, but important changes remain visible and reversible.
+                </p>
+
+                <ol>
+                    <li>The agent creates a plan.</li>
+                    <li>The workspace shows requested tools and affected files.</li>
+                    <li>You approve, edit, or reject the next action.</li>
+                    <li>The action result is written back into task history.</li>
+                </ol>
+            </section>
+
+            <section class="docs-section" id="cli">
+                <h2>CLI reference</h2>
+                <p>
+                    The CLI gives you a faster way to attach projects, start task runs, inspect status, and export summaries.
+                </p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">terminal</div>
+                    </div>
+                    <pre><code>otherone task create "Refactor authentication module"
+otherone task status
+otherone task approve next
+otherone task export --format markdown</code></pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="config">
+                <h2>Configuration</h2>
+                <p>
+                    Workspace behavior can be configured through a local <span class="inline-code">otherone.config.json</span> file.
+                </p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">otherone.config.json</div>
+                    </div>
+                    <pre><code>{
+  "workspace": {
+    "name": "otherone-web",
+    "memory": true
+  },
+  "tools": {
+    "filesystem": "approval_required",
+    "terminal": "approval_required",
+    "browser": "read_only"
+  },
+  "review": {
+    "requireApprovalForFileEdits": true,
+    "requireApprovalForCommands": true
+  }
+}</code></pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="api">
+                <h2>API</h2>
+                <p>
+                    Use the API to create tasks, inspect execution state, and integrate Otherone into internal workflows.
+                </p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots">
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                            <div class="code-dot"></div>
+                        </div>
+                        <div class="code-label">TypeScript</div>
+                    </div>
+                    <pre><code>import { Otherone } from "@otherone/sdk";
+
+const client = new Otherone({
+  apiKey: process.env.OTHERONE_API_KEY
+});
+
+const task = await client.tasks.create({
+  workspaceId: "ws_123",
+  goal: "Review the auth module and propose safe patches.",
+  reviewMode: "approval_required"
+});
+
+console.log(task.id);</code></pre>
+                </div>
+
+                <div class="callout">
+                    <div class="callout-icon"><i data-lucide="shield-check"></i></div>
+                    <div>
+                        <strong>API actions follow workspace permissions</strong>
+                        <p>Even when tasks are created through the API, tool permissions and review settings are still enforced by the workspace.</p>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <aside class="docs-toc">
+            <div class="toc-title">On this page</div>
+            <div class="toc-list">
+                <a href="#introduction" class="toc-link active">Introduction</a>
+                <a href="#installation" class="toc-link">Installation</a>
+                <a href="#first-task" class="toc-link">Run your first task</a>
+                <a href="#workspace" class="toc-link">Workspace structure</a>
+                <a href="#agents" class="toc-link">Agents</a>
+                <a href="#memory" class="toc-link">Memory</a>
+                <a href="#tools" class="toc-link">Tools</a>
+                <a href="#review" class="toc-link">Review model</a>
+                <a href="#cli" class="toc-link">CLI reference</a>
+                <a href="#config" class="toc-link">Configuration</a>
+                <a href="#api" class="toc-link">API</a>
+            </div>
+
+            <div class="toc-card">
+                <h4>Need help?</h4>
+                <p>Join the community or contact support for setup, deployment, and integration questions.</p>
+                <a href="#">Contact support</a>
+            </div>
+        </aside>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        const sectionIds = [
+            'introduction',
+            'installation',
+            'first-task',
+            'workspace',
+            'agents',
+            'memory',
+            'tools',
+            'review',
+            'cli',
+            'config',
+            'api'
+        ];
+
+        const sections = sectionIds.map(id => document.getElementById(id)).filter(Boolean);
+        const sidebarLinks = Array.from(document.querySelectorAll('.docs-nav-link'));
+        const tocLinks = Array.from(document.querySelectorAll('.toc-link'));
+
+        function setActiveDocLink(id) {
+            [...sidebarLinks, ...tocLinks].forEach(link => {
+                link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
+            });
+        }
+
+        const observer = new IntersectionObserver((entries) => {
+            const visibleEntries = entries
+                .filter(entry => entry.isIntersecting)
+                .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+
+            if (visibleEntries.length) {
+                setActiveDocLink(visibleEntries[0].target.id);
+            }
+        }, {
+            rootMargin: '-18% 0px -68% 0px',
+            threshold: 0.01
+        });
+
+        sections.forEach(section => observer.observe(section));
+
+        const mobileSelect = document.getElementById('mobileDocsSelect');
+
+        if (mobileSelect) {
+            mobileSelect.addEventListener('change', () => {
+                window.location.hash = mobileSelect.value;
+            });
+        }
+
+        const searchInput = document.getElementById('docsSearch');
+
+        if (searchInput) {
+            searchInput.addEventListener('input', () => {
+                const query = searchInput.value.trim().toLowerCase();
+
+                sidebarLinks.forEach(link => {
+                    const text = link.textContent.trim().toLowerCase();
+                    link.style.display = !query || text.includes(query) ? 'flex' : 'none';
+                });
+            });
+        }
+
+        document.addEventListener('keydown', event => {
+            const isMac = navigator.platform.toUpperCase().includes('MAC');
+            const pressedShortcut = isMac ? event.metaKey && event.key.toLowerCase() === 'k' : event.ctrlKey && event.key.toLowerCase() === 'k';
+
+            if (pressedShortcut && searchInput) {
+                event.preventDefault();
+                searchInput.focus();
+            }
+        });
+    </script>
+</body>
+</html>
