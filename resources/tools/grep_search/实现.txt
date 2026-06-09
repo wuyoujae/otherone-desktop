@@ -1,0 +1,448 @@
+`grep_search` 工具的实现主要分布在两个核心文件中：`rust/crates/runtime/src/file_ops.rs`（核心逻辑）和 `rust/crates/tools/src/lib.rs`（工具入口）。
+
+## 核心实现文件
+
+### 1. `rust/crates/runtime/src/file_ops.rs`
+
+这是 `grep_search` 的核心实现文件，包含以下关键组件：
+
+#### 数据结构
+- `GrepSearchInput` - 输入参数结构体，包含模式、路径、glob、输出模式、上下文行数等参数 [1](#5-0) 
+- `GrepSearchOutput` - 输出结果结构体，包含模式、文件数量、文件名列表、内容、匹配数等 [2](#5-1) 
+
+#### 核心函数
+- `grep_search()` - 公开接口函数，接受 `GrepSearchInput` 参数 [3](#5-2) 
+- `grep_search_impl()` - 内部实现函数，支持工作区边界检查 [4](#5-3) 
+- `build_grep_content_output()` - 构建内容模式的输出结果 [5](#5-4) 
+- `collect_search_files()` - 收集需要搜索的文件列表 [6](#5-5) 
+
+### 2. `rust/crates/tools/src/lib.rs`
+
+这是工具注册和执行的入口文件：
+
+- `grep_search` 工具规范定义，包含输入模式和权限要求 [7](#5-6) 
+- `run_grep_search()` - 工具执行入口，调用 `grep_search_in_workspace` 并序列化结果 [8](#5-7) 
+- `classify_grep_permission()` - 权限分类函数 [9](#5-8) 
+
+## 实现流程
+
+```mermaid
+graph TD
+    A[Tool Call: grep_search] --> B[run_grep_search in tools/src/lib.rs]
+    B --> C[Get current directory as workspace]
+    C --> D[grep_search_in_workspace in file_ops.rs]
+    D --> E[grep_search_impl - 内部实现]
+    E --> F[Normalize base path - 规范化基础路径]
+    F --> G[validate_workspace_boundary - 工作区边界验证]
+    G --> H[Build regex with flags - 构建正则表达式]
+    H --> I[Parse glob filter - 解析 glob 过滤器]
+    I --> J[collect_search_files - 收集搜索文件]
+    J --> K[For each file - 遍历每个文件]
+    K --> L[Validate workspace boundary - 验证工作区边界]
+    L --> M[Apply glob/file_type filters - 应用 glob/文件类型过滤]
+    M --> N[Read file contents - 读取文件内容]
+    N --> O{output_mode?}
+    O -->|count| P[Count matches - 计算匹配数]
+    O -->|content| Q[Find matching lines - 查找匹配行]
+    Q --> R[Apply context lines - 应用上下文行]
+    R --> S[Format with line numbers - 格式化带行号]
+    P --> T[Apply limit/offset - 应用限制/偏移]
+    S --> T
+    T --> U[Return GrepSearchOutput]
+    U --> V[to_pretty_json - JSON序列化]
+    V --> W[Final JSON Response]
+```
+
+## 核心实现逻辑
+
+`grep_search_impl()` 函数的实现包含以下关键步骤：
+
+1. **路径规范化** - 确定基础搜索路径，处理绝对/相对路径 [10](#5-9) 
+2. **正则表达式构建** - 使用 `RegexBuilder` 构建正则表达式，支持大小写不敏感和多行模式 [11](#5-10) 
+3. **Glob 过滤器解析** - 可选的 glob 模式用于过滤文件 [12](#5-11) 
+4. **输出模式处理** - 支持 `files_with_matches`、`content` 和 `count` 三种模式 [13](#5-12) 
+5. **文件收集** - 使用 `collect_search_files()` 收集需要搜索的文件 [14](#5-13) 
+6. **文件过滤** - 应用 glob 和文件类型过滤器 [15](#5-14) 
+7. **内容匹配** - 根据输出模式执行匹配或计数 [16](#5-15) 
+8. **上下文处理** - 在 `content` 模式下，应用 `-B`、`-A`、`-C` 参数添加上下文行 [17](#5-16) 
+9. **结果限制** - 应用 `head_limit` 和 `offset` 参数限制结果数量 [18](#5-17) 
+
+## 关键特性
+
+### 多种输出模式
+`grep_search` 支持三种输出模式：
+
+- `files_with_matches` - 默认模式，只返回匹配的文件名列表
+- `content` - 返回匹配的行内容，支持上下文行和行号
+- `count` - 返回每个文件中的匹配次数 [13](#5-12) 
+
+### 上下文行处理
+在 `content` 模式下，支持通过 `-B`（before）、`-A`（after）、`-C`（context）参数添加上下文行：
+
+```rust
+let start = index.saturating_sub(input.before.unwrap_or(context));
+let end = (index + input.after.unwrap_or(context) + 1).min(lines.len());
+``` [19](#5-18) 
+
+### 工作区边界保护
+`grep_search_in_workspace()` 提供工作区边界检查 [20](#5-19) 。
+
+### 权限分类
+`classify_grep_permission()` 根据路径是否在工作区内决定权限模式 [9](#5-8) 。
+
+## 测试覆盖
+
+实现包含测试用例验证基本搜索功能：
+
+```rust
+let grep_output = grep_search(&GrepSearchInput {
+    pattern: String::from("hello"),
+    path: Some(dir.to_string_lossy().into_owned()),
+    glob: Some(String::from("**/*.rs")),
+    output_mode: Some(String::from("content")),
+    // ... 其他参数
+}).expect("grep should succeed");
+``` [21](#5-20) 
+
+## 导出和公开API
+
+`rust/crates/runtime/src/lib.rs` 重新导出了这些函数，使其在整个 runtime crate 中可用 [22](#5-21) 。
+
+## Notes
+
+`grep_search` 工具在 PARITY 文档中被标记为具有良好的一致性（ripgrep-style search） [23](#5-22) 。工具支持丰富的参数配置，包括正则表达式标志、上下文行、文件类型过滤等 [1](#5-0) 。根据 ROADMAP，`grep` 可以作为 `grep_search` 的别名使用 [24](#5-23) 。
+
+Wiki pages you might want to explore:
+- [Runtime and Conversation Engine (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#2.2)
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+Wiki pages you might want to explore:
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+### Citations
+
+**File:** rust/crates/runtime/src/file_ops.rs (L140-164)
+```rust
+/// Parameters accepted by the grep-style search tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GrepSearchInput {
+    pub pattern: String,
+    pub path: Option<String>,
+    pub glob: Option<String>,
+    #[serde(rename = "output_mode")]
+    pub output_mode: Option<String>,
+    #[serde(rename = "-B")]
+    pub before: Option<usize>,
+    #[serde(rename = "-A")]
+    pub after: Option<usize>,
+    #[serde(rename = "-C")]
+    pub context_short: Option<usize>,
+    pub context: Option<usize>,
+    #[serde(rename = "-n")]
+    pub line_numbers: Option<bool>,
+    #[serde(rename = "-i")]
+    pub case_insensitive: Option<bool>,
+    #[serde(rename = "type")]
+    pub file_type: Option<String>,
+    pub head_limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub multiline: Option<bool>,
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L166-182)
+```rust
+/// Result payload returned by the grep-style search tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GrepSearchOutput {
+    pub mode: Option<String>,
+    #[serde(rename = "numFiles")]
+    pub num_files: usize,
+    pub filenames: Vec<String>,
+    pub content: Option<String>,
+    #[serde(rename = "numLines")]
+    pub num_lines: Option<usize>,
+    #[serde(rename = "numMatches")]
+    pub num_matches: Option<usize>,
+    #[serde(rename = "appliedLimit")]
+    pub applied_limit: Option<usize>,
+    #[serde(rename = "appliedOffset")]
+    pub applied_offset: Option<usize>,
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L390-393)
+```rust
+/// Runs a regex search over workspace files with optional context lines.
+pub fn grep_search(input: &GrepSearchInput) -> io::Result<GrepSearchOutput> {
+    grep_search_impl(input, None)
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L395-507)
+```rust
+fn grep_search_impl(
+    input: &GrepSearchInput,
+    workspace_root: Option<&Path>,
+) -> io::Result<GrepSearchOutput> {
+    let base_path = input
+        .path
+        .as_deref()
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or(std::env::current_dir()?);
+    let canonical_root = workspace_root.map(canonicalize_workspace_root);
+    if let Some(root) = canonical_root.as_deref() {
+        validate_workspace_boundary(&base_path, root)?;
+    }
+
+    let regex = RegexBuilder::new(&input.pattern)
+        .case_insensitive(input.case_insensitive.unwrap_or(false))
+        .dot_matches_new_line(input.multiline.unwrap_or(false))
+        .build()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+
+    let glob_filter = input
+        .glob
+        .as_deref()
+        .map(Pattern::new)
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    let file_type = input.file_type.as_deref();
+    let output_mode = input
+        .output_mode
+        .clone()
+        .unwrap_or_else(|| String::from("files_with_matches"));
+    let context = input.context.or(input.context_short).unwrap_or(0);
+
+    let mut filenames = Vec::new();
+    let mut content_lines = Vec::new();
+    let mut total_matches = 0usize;
+
+    for file_path in collect_search_files(&base_path)? {
+        if let Some(root) = canonical_root.as_deref() {
+            let canonical_file = file_path.canonicalize()?;
+            validate_workspace_boundary(&canonical_file, root)?;
+        }
+        if !matches_optional_filters(&file_path, glob_filter.as_ref(), file_type) {
+            continue;
+        }
+
+        let Ok(file_contents) = fs::read_to_string(&file_path) else {
+            continue;
+        };
+
+        if output_mode == "count" {
+            let count = regex.find_iter(&file_contents).count();
+            if count > 0 {
+                filenames.push(file_path.to_string_lossy().into_owned());
+                total_matches += count;
+            }
+            continue;
+        }
+
+        let lines: Vec<&str> = file_contents.lines().collect();
+        let mut matched_lines = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            if regex.is_match(line) {
+                total_matches += 1;
+                matched_lines.push(index);
+            }
+        }
+
+        if matched_lines.is_empty() {
+            continue;
+        }
+
+        filenames.push(file_path.to_string_lossy().into_owned());
+        if output_mode == "content" {
+            for index in matched_lines {
+                let start = index.saturating_sub(input.before.unwrap_or(context));
+                let end = (index + input.after.unwrap_or(context) + 1).min(lines.len());
+                for (current, line) in lines.iter().enumerate().take(end).skip(start) {
+                    let prefix = if input.line_numbers.unwrap_or(true) {
+                        format!("{}:{}:", file_path.to_string_lossy(), current + 1)
+                    } else {
+                        format!("{}:", file_path.to_string_lossy())
+                    };
+                    content_lines.push(format!("{prefix}{line}"));
+                }
+            }
+        }
+    }
+
+    let (filenames, applied_limit, applied_offset) =
+        apply_limit(filenames, input.head_limit, input.offset);
+    if output_mode == "content" {
+        return Ok(build_grep_content_output(
+            output_mode,
+            filenames,
+            content_lines,
+            input.head_limit,
+            input.offset,
+        ));
+    }
+
+    Ok(GrepSearchOutput {
+        mode: Some(output_mode.clone()),
+        num_files: filenames.len(),
+        filenames,
+        content: None,
+        num_lines: None,
+        num_matches: (output_mode == "count").then_some(total_matches),
+        applied_limit,
+        applied_offset,
+    })
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L509-527)
+```rust
+fn build_grep_content_output(
+    output_mode: String,
+    filenames: Vec<String>,
+    content_lines: Vec<String>,
+    head_limit: Option<usize>,
+    offset: Option<usize>,
+) -> GrepSearchOutput {
+    let (lines, limit, offset) = apply_limit(content_lines, head_limit, offset);
+    GrepSearchOutput {
+        mode: Some(output_mode),
+        num_files: filenames.len(),
+        filenames,
+        num_lines: Some(lines.len()),
+        content: Some(lines.join("\n")),
+        num_matches: None,
+        applied_limit: limit,
+        applied_offset: offset,
+    }
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L568-581)
+```rust
+fn collect_search_files(base_path: &Path) -> io::Result<Vec<PathBuf>> {
+    if base_path.is_file() {
+        return Ok(vec![base_path.to_path_buf()]);
+    }
+
+    let mut files = Vec::new();
+    for entry in WalkDir::new(base_path) {
+        let entry = entry.map_err(|error| io::Error::other(error.to_string()))?;
+        if entry.file_type().is_file() {
+            files.push(entry.path().to_path_buf());
+        }
+    }
+    Ok(files)
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L728-735)
+```rust
+/// Search file contents with workspace boundary enforcement.
+#[allow(dead_code)]
+pub fn grep_search_in_workspace(
+    input: &GrepSearchInput,
+    workspace_root: &Path,
+) -> io::Result<GrepSearchOutput> {
+    grep_search_impl(input, Some(workspace_root))
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L958-976)
+```rust
+        let grep_output = grep_search(&GrepSearchInput {
+            pattern: String::from("hello"),
+            path: Some(dir.to_string_lossy().into_owned()),
+            glob: Some(String::from("**/*.rs")),
+            output_mode: Some(String::from("content")),
+            before: None,
+            after: None,
+            context_short: None,
+            context: None,
+            line_numbers: Some(true),
+            case_insensitive: Some(false),
+            file_type: None,
+            head_limit: Some(10),
+            offset: Some(0),
+            multiline: Some(false),
+        })
+        .expect("grep should succeed");
+        assert!(grep_output.content.unwrap_or_default().contains("hello"));
+    }
+```
+
+**File:** rust/crates/tools/src/lib.rs (L475-500)
+```rust
+        ToolSpec {
+            name: "grep_search",
+            description: "Search file contents with a regex pattern.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" },
+                    "glob": { "type": "string" },
+                    "output_mode": { "type": "string" },
+                    "-B": { "type": "integer", "minimum": 0 },
+                    "-A": { "type": "integer", "minimum": 0 },
+                    "-C": { "type": "integer", "minimum": 0 },
+                    "context": { "type": "integer", "minimum": 0 },
+                    "-n": { "type": "boolean" },
+                    "-i": { "type": "boolean" },
+                    "type": { "type": "string" },
+                    "head_limit": { "type": "integer", "minimum": 1 },
+                    "offset": { "type": "integer", "minimum": 0 },
+                    "multiline": { "type": "boolean" }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2150-2154)
+```rust
+#[allow(clippy::needless_pass_by_value)]
+fn run_grep_search(input: GrepSearchInput) -> Result<String, String> {
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    to_pretty_json(grep_search_in_workspace(&input, &workspace).map_err(io_to_string)?)
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2243-2253)
+```rust
+fn classify_grep_permission(input: &GrepSearchInput) -> PermissionMode {
+    if input
+        .path
+        .as_deref()
+        .is_none_or(|path| path_within_current_workspace(path, false))
+    {
+        PermissionMode::ReadOnly
+    } else {
+        PermissionMode::DangerFullAccess
+    }
+}
+```
+
+**File:** rust/crates/runtime/src/lib.rs (L83-88)
+```rust
+pub use file_ops::{
+    edit_file, edit_file_in_workspace, glob_search, glob_search_in_workspace, grep_search,
+    grep_search_in_workspace, read_file, read_file_in_workspace, write_file,
+    write_file_in_workspace, EditFileOutput, GlobSearchOutput, GrepSearchInput, GrepSearchOutput,
+    ReadFileOutput, StructuredPatchHunk, TextFilePayload, WriteFileOutput,
+};
+```
+
+**File:** rust/PARITY.md (L56-56)
+```markdown
+| **grep_search** | `runtime::file_ops` | ripgrep-style search — **good parity** |
+```
+
+**File:** ROADMAP.md (L4505-4506)
+```markdown
+           ("glob", "glob_search"),
+           ("grep", "grep_search"),
+```

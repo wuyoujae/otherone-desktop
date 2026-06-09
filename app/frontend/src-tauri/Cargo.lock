@@ -3295,9 +3295,9 @@ dependencies = [
 
 [[package]]
 name = "otherone"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "453d6a3eda6631d380958f969c97beae71fdbfa0551c47f1aef838201dbfc3c1"
+checksum = "5383ec9e081d99e510ce82e7ffe8ebdb648df30333fd569a194402630d2ccb36"
 dependencies = [
  "otherone-agent",
  "otherone-ai",
@@ -3312,9 +3312,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-agent"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b27dbb021ed684748b3382ec95e6fb677041c357f483bda8ac5859be5cb73d6d"
+checksum = "774cd749368fb69c63fb4c102cd1f0658be338a6de1e7919c967cc96a610acc6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3420,9 +3420,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-tools"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8715fcab8eb7a5cf798cd8df85f0773f1d2b255847ecffc68b712b73632ed96"
+checksum = "e5fd81dcd69e786d3d119aacb0eeadb46457e12ef81dedd50bd2893843ca6159"
 dependencies = [
  "anyhow",
  "otherone-ai",
@@ -3436,8 +3436,12 @@ dependencies = [
 name = "otherone_desktop"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures-util",
+ "glob",
  "otherone",
+ "regex",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3445,6 +3449,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
+ "walkdir",
 ]
 
 [[package]]
@@ -4049,6 +4054,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

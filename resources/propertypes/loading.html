@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Streaming with Bean Loader | Otherone</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* ================= 核心设计变量 ================= */
+        :root {
+            --bg-page: #F9F9F8;
+            --bg-chat: #FFFFFF;
+            
+            --text-dark: #050505;
+            --text-muted: #737373;
+            
+            --border-light: rgba(0, 0, 0, 0.08);
+            
+            --font-body: 'Inter', sans-serif;
+            --font-display: 'Space Grotesk', sans-serif;
+            
+            --bezier-award: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-page);
+            color: var(--text-dark);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        /* 顶部控制栏 */
+        .top-bar {
+            width: 100%; max-width: 800px;
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 40px;
+        }
+        .brand { font-family: var(--font-display); font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px;}
+        .btn-test {
+            background: var(--text-dark); color: #fff; border: none; padding: 10px 20px;
+            border-radius: 100px; font-weight: 600; cursor: pointer; transition: transform 0.2s;
+        }
+        .btn-test:active { transform: scale(0.95); }
+
+        /* ================= 对话区布局 ================= */
+        .chat-container {
+            width: 100%; max-width: 800px;
+            display: flex; flex-direction: column; gap: 32px;
+        }
+
+        .chat-turn { display: flex; flex-direction: column; gap: 20px; }
+
+        .user-message {
+            align-self: flex-end; background: #EFEFEF; padding: 16px 20px;
+            border-radius: 16px 16px 4px 16px; max-width: 80%; font-size: 15px; line-height: 1.6;
+        }
+
+        .ai-message {
+            align-self: flex-start; display: flex; gap: 16px; max-width: 90%;
+        }
+        .ai-avatar {
+            width: 32px; height: 32px; background: var(--text-dark); color: #fff;
+            border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        
+        .ai-content-wrapper {
+            display: flex; flex-direction: column; gap: 16px; padding-top: 4px;
+        }
+
+        /* 正在流式输出的文本样式 */
+        .ai-text { font-size: 15px; line-height: 1.7; color: #222; }
+        
+        /* 文本显影特效 (Cinematic Blur) */
+        .blur-word {
+            display: inline-block; opacity: 0; filter: blur(8px); transform: translateY(4px);
+            animation: focusIn 0.4s var(--bezier-award) forwards; white-space: pre-wrap;
+        }
+        @keyframes focusIn { to { opacity: 1; filter: blur(0); transform: translateY(0); } }
+
+        /* ================= 核心：高级 SVG 豆仔 Loading 特效 ================= */
+        
+        .bean-loader-wrapper {
+            display: flex; align-items: center; gap: 12px;
+            /* 保证它在下一行独立存在 */
+            margin-top: 8px; 
+            /* 动画：当结束时丝滑缩回 */
+            overflow: hidden;
+            transition: all 0.5s var(--bezier-award);
+            opacity: 1;
+            height: 32px; /* 固定高度，消失时变为0 */
+        }
+        
+        /* 消失状态的类 */
+        .bean-loader-wrapper.is-finished {
+            height: 0; opacity: 0; margin-top: 0;
+        }
+
+        .bean-loader-text {
+            font-size: 13px; font-weight: 500; color: var(--text-muted);
+            animation: pulseText 2s infinite;
+        }
+        @keyframes pulseText { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+        /* 豆仔本体 (包含上下浮动) */
+        .bean-svg {
+            animation: floatBean 2s ease-in-out infinite alternate;
+            filter: drop-shadow(0 4px 12px rgba(0,0,0,0.1));
+        }
+        @keyframes floatBean { 0% { transform: translateY(2px); } 100% { transform: translateY(-2px); } }
+
+        /* 情绪表情循环控制 */
+        .face-normal { animation: cycleNormal 6s infinite; }
+        .face-blink { animation: cycleBlink 6s infinite; }
+        .face-happy { animation: cycleHappy 6s infinite; }
+
+        /* 
+           设定 6 秒的表情剧本：
+           0-40% 正常发呆 -> 40-45% 眨眼 -> 45-65% 正常 -> 65-90% 开心思考 -> 90-95% 眨眼 -> 100% 正常
+        */
+        @keyframes cycleNormal {
+            0%, 38% { opacity: 1; }
+            40%, 45% { opacity: 0; }
+            47%, 63% { opacity: 1; }
+            65%, 90% { opacity: 0; }
+            95%, 100% { opacity: 1; }
+        }
+        @keyframes cycleBlink {
+            0%, 38% { opacity: 0; }
+            40%, 45% { opacity: 1; }
+            47%, 90% { opacity: 0; }
+            92%, 96% { opacity: 1; }
+            98%, 100% { opacity: 0; }
+        }
+        @keyframes cycleHappy {
+            0%, 63% { opacity: 0; }
+            65%, 88% { opacity: 1; }
+            90%, 100% { opacity: 0; }
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="top-bar">
+        <div class="brand"><i data-lucide="hexagon"></i> Otherone</div>
+        <button class="btn-test" onclick="startStreaming()">Test Stream</button>
+    </div>
+
+    <div class="chat-container" id="chatBox">
+        <!-- 默认展示的一段历史对话 -->
+        <div class="chat-turn">
+            <div class="user-message">帮我写一段快排算法。</div>
+            <div class="ai-message">
+                <div class="ai-avatar"><i data-lucide="hexagon" style="width: 16px;"></i></div>
+                <div class="ai-content-wrapper">
+                    <div class="ai-text">这是一个经典的快速排序算法实现。您需要具体的哪种语言版本？</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        // 模拟 AI 即将返回的长文本
+        const rawResponse = "没问题。在这个版本中，我们采用了原地分区的思想，这样可以将空间复杂度降低到 O(log n)。同时，为了应对极端的不平衡情况，建议您在实际工程中配合随机主元选择策略。\n\n请问您是否需要我直接生成 JavaScript 或 Python 的代码实现？";
+
+        function startStreaming() {
+            const chatBox = document.getElementById('chatBox');
+
+            // 1. 插入用户问题
+            const userHtml = `
+                <div class="chat-turn">
+                    <div class="user-message">继续，给我解释一下它的空间复杂度。</div>
+                </div>
+            `;
+            chatBox.insertAdjacentHTML('beforeend', userHtml);
+
+            // 2. 构建包含“文本区”和“豆仔Loading区”的 AI 回复块
+            // 豆仔 SVG 设计详解：
+            // - 外壳 rect 纯黑，极高圆角
+            // - 内部3组 <g> 对应三种表情，依靠 css keyframes 控制显隐
+            const aiHtml = `
+                <div class="chat-turn ai-reply-block">
+                    <div class="ai-message">
+                        <div class="ai-avatar"><i data-lucide="hexagon" style="width: 16px; color: #fff;"></i></div>
+                        <div class="ai-content-wrapper">
+                            
+                            <!-- 流式文字容器 -->
+                            <div class="ai-text stream-container"></div>
+                            
+                            <!-- 下一行的豆仔 Loading 专属区域 -->
+                            <div class="bean-loader-wrapper">
+                                <svg class="bean-svg" width="38" height="24" viewBox="0 0 38 24" xmlns="http://www.w3.org/2000/svg">
+                                    <!-- 豆仔身体 (黑曜石色) -->
+                                    <rect width="38" height="24" rx="12" fill="#050505"/>
+                                    
+                                    <g fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <!-- 表情 1：发呆/正常 (O _ O) -->
+                                        <g class="face-normal">
+                                            <circle cx="12" cy="11" r="1.5" fill="#FFF" stroke="none"/>
+                                            <circle cx="26" cy="11" r="1.5" fill="#FFF" stroke="none"/>
+                                            <line x1="16" y1="16" x2="22" y2="16" stroke-width="1.5"/>
+                                        </g>
+                                        
+                                        <!-- 表情 2：眨眼 (- _ -) -->
+                                        <g class="face-blink">
+                                            <line x1="10" y1="11" x2="14" y2="11"/>
+                                            <line x1="24" y1="11" x2="28" y2="11"/>
+                                            <line x1="16" y1="16" x2="22" y2="16" stroke-width="1.5"/>
+                                        </g>
+
+                                        <!-- 表情 3：开心思考 (^ w ^) -->
+                                        <g class="face-happy">
+                                            <path d="M10 12 Q12 9 14 12"/>
+                                            <path d="M24 12 Q26 9 28 12"/>
+                                            <path d="M16 15 Q19 18 22 15" stroke-width="1.5"/>
+                                        </g>
+                                    </g>
+                                </svg>
+                                <span class="bean-loader-text">Generating...</span>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            `;
+            chatBox.insertAdjacentHTML('beforeend', aiHtml);
+
+            // 重新渲染可能的 Icon
+            lucide.createIcons();
+
+            // 3. 执行流式打字效果 (结合 Cinematic Blur 模糊显影)
+            const replyBlocks = document.querySelectorAll('.ai-reply-block');
+            const currentBlock = replyBlocks[replyBlocks.length - 1];
+            const textContainer = currentBlock.querySelector('.stream-container');
+            const loaderWrapper = currentBlock.querySelector('.bean-loader-wrapper');
+
+            const tokens = rawResponse.match(/[\w\u4e00-\u9fa5]+|[^\s\w\u4e00-\u9fa5]|\s+/g);
+            let i = 0;
+
+            function streamNextToken() {
+                if (i < tokens.length) {
+                    const span = document.createElement('span');
+                    span.className = 'blur-word';
+                    span.textContent = tokens[i];
+                    textContainer.appendChild(span);
+                    
+                    i++;
+                    // 模拟网络延迟生成
+                    setTimeout(streamNextToken, Math.random() * 50 + 30);
+                    
+                    // 自动滚动到底部
+                    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                } else {
+                    // 🎉 文本流式输出完成，隐藏豆仔 Loading
+                    loaderWrapper.classList.add('is-finished');
+                }
+            }
+            
+            // 延迟一点开始模拟请求时间
+            setTimeout(streamNextToken, 400);
+        }
+    </script>
+</body>
+</html>

@@ -197,30 +197,57 @@ fn session_to_summary(
 }
 
 fn entries_to_messages(entries: Vec<Entry>) -> Vec<AppMessageGroup> {
-    entries
-        .into_iter()
-        .filter(|entry| entry.status == 0)
-        .map(|entry| {
-            let role = message_role(&entry.role);
-            let item = entry_to_item(&entry);
+    let entries: Vec<&Entry> = entries.iter().filter(|e| e.status == 0).collect();
+    if entries.is_empty() {
+        return vec![];
+    }
 
-            AppMessageGroup {
+    let mut groups: Vec<AppMessageGroup> = Vec::new();
+    let mut i = 0;
+
+    while i < entries.len() {
+        let entry = entries[i];
+        let role = message_role(&entry.role);
+
+        if role == "user" {
+            groups.push(AppMessageGroup {
                 id: entry.entry_id.clone(),
-                role,
-                items: vec![item],
-            }
-        })
-        .collect()
+                role: "user".to_string(),
+                items: vec![entry_to_item(entry)],
+            });
+            i += 1;
+            continue;
+        }
+
+        // AI 组：合并连续的 user 之外的 entry（assistant / tool / thinking）
+        let group_id = entry.entry_id.clone();
+        let mut items: Vec<AppMessageItem> = vec![entry_to_item(entry)];
+        i += 1;
+
+        while i < entries.len() && message_role(&entries[i].role) != "user" {
+            items.push(entry_to_item(entries[i]));
+            i += 1;
+        }
+
+        groups.push(AppMessageGroup {
+            id: group_id,
+            role: "ai".to_string(),
+            items,
+        });
+    }
+
+    groups
 }
 
 fn entry_to_item(entry: &Entry) -> AppMessageItem {
     let is_tool = entry.role.eq_ignore_ascii_case("tool");
     let is_thinking =
         entry.role.eq_ignore_ascii_case("thinking") || entry.role.eq_ignore_ascii_case("reasoning");
-    let detail = entry
-        .tools
-        .as_ref()
-        .and_then(|tools| serde_json::to_string_pretty(tools).ok());
+    let (tool_label, tool_detail) = if is_tool {
+        parse_tool_display(entry)
+    } else {
+        (None, None)
+    };
 
     AppMessageItem {
         id: format!("item-{}", entry.entry_id),
@@ -238,7 +265,7 @@ fn entry_to_item(entry: &Entry) -> AppMessageItem {
             Some(entry.content.clone())
         },
         label: if is_tool {
-            Some(tool_label(entry))
+            tool_label
         } else if is_thinking {
             Some("深度思考".to_string())
         } else {
@@ -250,7 +277,7 @@ fn entry_to_item(entry: &Entry) -> AppMessageItem {
             "running"
         }
         .to_string(),
-        detail,
+        detail: tool_detail,
         entry_id: entry.entry_id.clone(),
         source_role: entry.role.clone(),
         tools: entry.tools.clone(),
@@ -259,21 +286,76 @@ fn entry_to_item(entry: &Entry) -> AppMessageItem {
     }
 }
 
+/// 从 tool entry 解析可读的显示信息。
+/// 返回 (label, optional_detail)。detail 为 None 时前端不可展开。
+fn parse_tool_display(entry: &Entry) -> (Option<String>, Option<String>) {
+    let tools_value = match &entry.tools {
+        Some(v) => v,
+        None => return (Some("工具调用".to_string()), None),
+    };
+
+    let function_name = tools_value
+        .get("function_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let result = tools_value.get("result");
+    let error = tools_value.get("error").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+
+    match function_name {
+        "read_file" => {
+            let file_name = extract_file_path(result);
+            if error.is_some() {
+                (Some(format!("读取失败 · {}", short_name(&file_name))), None)
+            } else {
+                (Some(format!("已读取 · {}", short_name(&file_name))), None)
+            }
+        }
+        "write_file" => {
+            let file_name = extract_file_path(result);
+            if error.is_some() {
+                (Some(format!("写入失败 · {}", short_name(&file_name))), None)
+            } else {
+                (Some(format!("已写入 · {}", short_name(&file_name))), None)
+            }
+        }
+        _ => {
+            // 未知工具类型 — 给基本标签，detail 留给需要展开的工具
+            (Some(format!("已调用 {}", function_name)), None)
+        }
+    }
+}
+
+/// 从工具 result JSON 中提取文件路径
+fn extract_file_path(result: Option<&Value>) -> String {
+    let Some(res) = result else { return String::new() };
+    // read_file 输出：result.file.file_path 或 result.filePath
+    if let Some(p) = res.get("file").and_then(|f| f.get("file_path")).and_then(|v| v.as_str()) {
+        return p.to_string();
+    }
+    if let Some(p) = res.get("file_path").and_then(|v| v.as_str()) {
+        return p.to_string();
+    }
+    if let Some(p) = res.get("filePath").and_then(|v| v.as_str()) {
+        return p.to_string();
+    }
+    String::new()
+}
+
+/// 从完整路径中提取文件名或最后两级
+fn short_name(path: &str) -> &str {
+    if path.is_empty() {
+        return "文件";
+    }
+    // 取最后一个路径分隔符之后的部分
+    path.rsplit(&['\\', '/'][..]).next().unwrap_or(path)
+}
+
 fn message_role(role: &str) -> String {
     if role.eq_ignore_ascii_case("user") {
         "user".to_string()
     } else {
         "ai".to_string()
-    }
-}
-
-fn tool_label(entry: &Entry) -> String {
-    let content = entry.content.trim();
-
-    if content.is_empty() {
-        "工具调用已完成".to_string()
-    } else {
-        content.to_string()
     }
 }
 

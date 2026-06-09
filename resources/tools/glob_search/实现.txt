@@ -1,0 +1,472 @@
+`glob_search` 工具的实现主要分布在两个核心文件中：`rust/crates/runtime/src/file_ops.rs`（核心逻辑）和 `rust/crates/tools/src/lib.rs`（工具入口）。
+
+## 核心实现文件
+
+### 1. `rust/crates/runtime/src/file_ops.rs`
+
+这是 `glob_search` 的核心实现文件，包含以下关键组件：
+
+#### 数据结构
+- `GlobSearchOutput` - 输出封装结构，包含搜索耗时、文件数量、文件名列表和截断标志 [1](#3-0) 
+
+#### 核心函数
+- `glob_search()` - 公开接口函数，接受模式和可选路径参数 [2](#3-1) 
+- `glob_search_impl()` - 内部实现函数，支持工作区边界检查 [3](#3-2) 
+
+#### 辅助函数
+- `expand_braces()` - 展开花括号表达式（如 `*.{rs,toml}`） [4](#3-3) 
+- `should_skip_glob_dir()` - 跳过常见重目录（如 `node_modules`, `target`） [5](#3-4) 
+- `derive_glob_walk_root()` - 从模式推导遍历根目录 [6](#3-5) 
+
+### 2. `rust/crates/tools/src/lib.rs`
+
+这是工具注册和执行的入口文件：
+
+- `glob_search` 工具规范定义，包含输入模式和权限要求 [7](#3-6) 
+- `run_glob_search()` - 工具执行入口，调用 `glob_search_in_workspace` 并序列化结果 [8](#3-7) 
+- `GlobSearchInputValue` - 输入参数结构体 [9](#3-8) 
+- `classify_glob_permission()` - 权限分类函数 [10](#3-9) 
+
+## 实现流程
+
+```mermaid
+graph TD
+    A[Tool Call: glob_search] --> B[run_glob_search in tools/src/lib.rs]
+    B --> C[Get current directory as workspace]
+    C --> D[glob_search_in_workspace in file_ops.rs]
+    D --> E[glob_search_impl - 内部实现]
+    E --> F[Normalize base directory - 规范化基础目录]
+    F --> G[validate_workspace_boundary - 工作区边界验证]
+    G --> H[expand_braces - 展开花括号表达式]
+    H --> I[For each expanded pattern - 遍历每个展开的模式]
+    I --> J[derive_glob_walk_root - 推导遍历根目录]
+    J --> K[WalkDir with directory filtering - 带目录过滤的遍历]
+    K --> L[Pattern matching - 模式匹配]
+    L --> M[Collect and deduplicate matches - 收集并去重匹配结果]
+    M --> N[Sort by modification time - 按修改时间排序]
+    N --> O[Limit to 100 results - 限制为100个结果]
+    O --> P[Return GlobSearchOutput]
+    P --> Q[to_pretty_json - JSON序列化]
+    Q --> R[Final JSON Response]
+```
+
+## 核心实现逻辑
+
+`glob_search_impl()` 函数的实现包含以下关键步骤：
+
+1. **路径规范化** - 确定基础搜索目录，处理绝对/相对路径 [11](#3-10) 
+2. **工作区边界验证** - 如果提供了工作区根目录，验证路径不逃逸 [12](#3-11) 
+3. **花括号展开** - 将 `*.{rs,toml}` 展开为多个模式 [13](#3-12) 
+4. **目录遍历** - 使用 `WalkDir` 遍历文件系统，跳过重目录 [14](#3-13) 
+5. **模式匹配** - 使用 `glob::Pattern` 匹配文件路径 [15](#3-14) 
+6. **结果去重** - 使用 `HashSet` 确保结果唯一 [16](#3-15) 
+7. **排序和限制** - 按修改时间排序，限制最多100个结果 [17](#3-16) 
+
+## 关键特性
+
+### 花括号展开
+`expand_braces()` 函数处理 shell 风格的花括号表达式：
+
+```rust
+fn expand_braces(pattern: &str) -> Vec<String> {
+    // 将 "foo.{a,b,c}" 展开为 ["foo.a", "foo.b", "foo.c"]
+}
+``` [4](#3-3) 
+
+### 目录过滤
+`should_skip_glob_dir()` 跳过常见的重目录：
+
+```rust
+const GLOB_SEARCH_IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    ".build",
+    "target",
+    "dist",
+    "coverage",
+];
+``` [18](#3-17) 
+
+### 工作区边界保护
+`glob_search_in_workspace()` 提供工作区边界检查 [19](#3-18) 。
+
+## 测试覆盖
+
+实现包含完整的测试用例：
+
+- 基本目录搜索测试 [20](#3-19) 
+- 花括号展开测试 [21](#3-20) 
+- 重目录跳过测试 [22](#3-21) 
+
+## 导出和公开API
+
+`rust/crates/runtime/src/lib.rs` 重新导出了这些函数，使其在整个 runtime crate 中可用 [23](#3-22) 。
+
+## Notes
+
+`glob_search` 工具在 ROADMAP #60 中修复了花括号展开问题，之前 `glob` crate 不支持 shell 风格的花括号组 [24](#3-23) 。工具支持多种命名变体，权限分类基于路径和模式是否在工作区内 [10](#3-9) 。
+
+Wiki pages you might want to explore:
+- [Runtime and Conversation Engine (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#2.2)
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+Wiki pages you might want to explore:
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+### Citations
+
+**File:** rust/crates/runtime/src/file_ops.rs (L19-26)
+```rust
+const GLOB_SEARCH_IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    ".build",
+    "target",
+    "dist",
+    "coverage",
+];
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L129-138)
+```rust
+/// Result of a glob-based filename search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlobSearchOutput {
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u128,
+    #[serde(rename = "numFiles")]
+    pub num_files: usize,
+    pub filenames: Vec<String>,
+    pub truncated: bool,
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L308-311)
+```rust
+/// Expands a glob pattern and returns matching filenames.
+pub fn glob_search(pattern: &str, path: Option<&str>) -> io::Result<GlobSearchOutput> {
+    glob_search_impl(pattern, path, None)
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L313-388)
+```rust
+fn glob_search_impl(
+    pattern: &str,
+    path: Option<&str>,
+    workspace_root: Option<&Path>,
+) -> io::Result<GlobSearchOutput> {
+    let started = Instant::now();
+    let base_dir = path
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or(std::env::current_dir()?);
+    let canonical_root = workspace_root.map(canonicalize_workspace_root);
+    if let Some(root) = canonical_root.as_deref() {
+        validate_workspace_boundary(&base_dir, root)?;
+    }
+    let search_pattern = if Path::new(pattern).is_absolute() {
+        pattern.to_owned()
+    } else {
+        base_dir.join(pattern).to_string_lossy().into_owned()
+    };
+
+    // The `glob` crate does not support brace expansion ({a,b,c}).
+    // Expand braces into multiple patterns so patterns like
+    // `Assets/**/*.{cs,uxml,uss}` work correctly.
+    let expanded = expand_braces(&search_pattern);
+
+    let mut seen = HashSet::new();
+    let mut matches = Vec::new();
+    for pat in &expanded {
+        let compiled = Pattern::new(pat)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        let walk_root = derive_glob_walk_root(pat);
+        if let Some(root) = canonical_root.as_deref() {
+            let canonical_walk_root = walk_root
+                .canonicalize()
+                .unwrap_or_else(|_| walk_root.clone());
+            validate_workspace_boundary(&canonical_walk_root, root)?;
+        }
+        let entries = WalkDir::new(&walk_root)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_glob_dir(entry));
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if entry.file_type().is_file()
+                && compiled.matches_path(candidate)
+                && seen.insert(candidate.to_path_buf())
+            {
+                if let Some(root) = canonical_root.as_deref() {
+                    let canonical_candidate = candidate.canonicalize()?;
+                    validate_workspace_boundary(&canonical_candidate, root)?;
+                }
+                matches.push(candidate.to_path_buf());
+            }
+        }
+    }
+
+    matches.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(Reverse)
+    });
+
+    let truncated = matches.len() > 100;
+    let filenames = matches
+        .into_iter()
+        .take(100)
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    Ok(GlobSearchOutput {
+        duration_ms: started.elapsed().as_millis(),
+        num_files: filenames.len(),
+        filenames,
+        truncated,
+    })
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L535-541)
+```rust
+fn should_skip_glob_dir(entry: &DirEntry) -> bool {
+    entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| GLOB_SEARCH_IGNORED_DIRS.contains(&name))
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L543-562)
+```rust
+fn derive_glob_walk_root(pattern: &str) -> PathBuf {
+    let path = Path::new(pattern);
+    let mut prefix = PathBuf::new();
+    let mut saw_component = false;
+
+    for component in path.components() {
+        let text = component.as_os_str().to_string_lossy();
+        if component_contains_glob(&text) {
+            break;
+        }
+        prefix.push(component.as_os_str());
+        saw_component = true;
+    }
+
+    if saw_component {
+        prefix
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L718-726)
+```rust
+/// Expand a glob pattern with workspace boundary enforcement.
+#[allow(dead_code)]
+pub fn glob_search_in_workspace(
+    pattern: &str,
+    path: Option<&str>,
+    workspace_root: &Path,
+) -> io::Result<GlobSearchOutput> {
+    glob_search_impl(pattern, path, Some(workspace_root))
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L751-771)
+```rust
+/// Expand shell-style brace groups in a glob pattern.
+///
+/// Handles one level of braces: `foo.{a,b,c}` → `["foo.a", "foo.b", "foo.c"]`.
+/// Nested braces are not expanded (uncommon in practice).
+/// Patterns without braces pass through unchanged.
+fn expand_braces(pattern: &str) -> Vec<String> {
+    let Some(open) = pattern.find('{') else {
+        return vec![pattern.to_owned()];
+    };
+    let Some(close) = pattern[open..].find('}').map(|i| open + i) else {
+        // Unmatched brace — treat as literal.
+        return vec![pattern.to_owned()];
+    };
+    let prefix = &pattern[..open];
+    let suffix = &pattern[close + 1..];
+    let alternatives = &pattern[open + 1..close];
+    alternatives
+        .split(',')
+        .flat_map(|alt| expand_braces(&format!("{prefix}{alt}{suffix}")))
+        .collect()
+}
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L943-977)
+```rust
+    #[test]
+    fn globs_and_greps_directory() {
+        let dir = temp_path("search-dir");
+        std::fs::create_dir_all(&dir).expect("directory should be created");
+        let file = dir.join("demo.rs");
+        write_file(
+            file.to_string_lossy().as_ref(),
+            "fn main() {\n println!(\"hello\");\n}\n",
+        )
+        .expect("file write should succeed");
+
+        let globbed = glob_search("**/*.rs", Some(dir.to_string_lossy().as_ref()))
+            .expect("glob should succeed");
+        assert_eq!(globbed.num_files, 1);
+
+        let grep_output = grep_search(&GrepSearchInput {
+            pattern: String::from("hello"),
+            path: Some(dir.to_string_lossy().into_owned()),
+            glob: Some(String::from("**/*.rs")),
+            output_mode: Some(String::from("content")),
+            before: None,
+            after: None,
+            context_short: None,
+            context: None,
+            line_numbers: Some(true),
+            case_insensitive: Some(false),
+            file_type: None,
+            head_limit: Some(10),
+            offset: Some(0),
+            multiline: Some(false),
+        })
+        .expect("grep should succeed");
+        assert!(grep_output.content.unwrap_or_default().contains("hello"));
+    }
+
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L1008-1023)
+```rust
+    #[test]
+    fn glob_search_with_braces_finds_files() {
+        let dir = temp_path("glob-braces");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("b.toml"), "[package]").unwrap();
+        std::fs::write(dir.join("c.txt"), "hello").unwrap();
+
+        let result =
+            glob_search("*.{rs,toml}", Some(dir.to_str().unwrap())).expect("glob should succeed");
+        assert_eq!(
+            result.num_files, 2,
+            "should match .rs and .toml but not .txt"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+```
+
+**File:** rust/crates/runtime/src/file_ops.rs (L1025-1060)
+```rust
+    #[test]
+    fn glob_search_skips_common_heavy_directories() {
+        let dir = temp_path("glob-ignored-dirs");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(dir.join(".build/checkouts/pkg")).unwrap();
+        std::fs::create_dir_all(dir.join("target/debug/deps")).unwrap();
+
+        std::fs::write(dir.join("src/AGENTS.md"), "src").unwrap();
+        std::fs::write(dir.join("docs/AGENTS.md"), "docs").unwrap();
+        std::fs::write(dir.join("node_modules/pkg/AGENTS.md"), "node_modules").unwrap();
+        std::fs::write(dir.join(".build/checkouts/pkg/AGENTS.md"), ".build").unwrap();
+        std::fs::write(dir.join("target/debug/deps/AGENTS.md"), "target").unwrap();
+
+        let result =
+            glob_search("**/AGENTS.md", Some(dir.to_str().unwrap())).expect("glob should succeed");
+
+        assert_eq!(result.num_files, 2, "ignored dirs should be pruned");
+        assert!(result
+            .filenames
+            .iter()
+            .any(|path| path.ends_with("src/AGENTS.md")));
+        assert!(result
+            .filenames
+            .iter()
+            .any(|path| path.ends_with("docs/AGENTS.md")));
+        assert!(!result
+            .filenames
+            .iter()
+            .any(|path| path.contains("node_modules")
+                || path.contains(".build")
+                || path.contains("/target/")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+```
+
+**File:** rust/crates/tools/src/lib.rs (L461-474)
+```rust
+        ToolSpec {
+            name: "glob_search",
+            description: "Find files by glob pattern.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2141-2148)
+```rust
+#[allow(clippy::needless_pass_by_value)]
+fn run_glob_search(input: GlobSearchInputValue) -> Result<String, String> {
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    to_pretty_json(
+        glob_search_in_workspace(&input.pattern, input.path.as_deref(), &workspace)
+            .map_err(io_to_string)?,
+    )
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2230-2241)
+```rust
+fn classify_glob_permission(input: &GlobSearchInputValue) -> PermissionMode {
+    let base_allowed = input
+        .path
+        .as_deref()
+        .is_none_or(|path| path_within_current_workspace(path, false));
+    let pattern_allowed = path_within_current_workspace(&input.pattern, true);
+    if base_allowed && pattern_allowed {
+        PermissionMode::ReadOnly
+    } else {
+        PermissionMode::DangerFullAccess
+    }
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2411-2415)
+```rust
+#[derive(Debug, Deserialize)]
+struct GlobSearchInputValue {
+    pattern: String,
+    path: Option<String>,
+}
+```
+
+**File:** rust/crates/runtime/src/lib.rs (L83-88)
+```rust
+pub use file_ops::{
+    edit_file, edit_file_in_workspace, glob_search, glob_search_in_workspace, grep_search,
+    grep_search_in_workspace, read_file, read_file_in_workspace, write_file,
+    write_file_in_workspace, EditFileOutput, GlobSearchOutput, GrepSearchInput, GrepSearchOutput,
+    ReadFileOutput, StructuredPatchHunk, TextFilePayload, WriteFileOutput,
+};
+```
+
+**File:** ROADMAP.md (L1277-1277)
+```markdown
+60. **`glob_search` silently returns 0 results for brace expansion patterns** — user report 2026-04-10 in #claw-code (zero, Windows/Unity). Patterns like `Assets/**/*.{cs,uxml,uss}` returned 0 files because the `glob` crate (v0.3) does not support shell-style brace groups. The agent fell back to shell tools as a workaround. **Done at `3a6c9a5` 2026-04-10**: added `expand_braces()` pre-processor that expands brace groups before passing to `glob::glob()`. Handles nested braces. Results deduplicated via `HashSet`. 5 regression tests. Source: zero in #claw-code; traced by gaebal-gajae.
+```

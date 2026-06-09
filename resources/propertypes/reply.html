@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Streaming Effects | Otherone</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* ================= 核心设计变量 ================= */
+        :root {
+            --bg-page: #F9F9F8;
+            --bg-card: #FFFFFF;
+            --text-dark: #050505;
+            --text-muted: #737373;
+            --border-light: rgba(0, 0, 0, 0.08);
+            --accent-gold: #D4AF37;
+            --font-body: 'Inter', sans-serif;
+            --font-display: 'Space Grotesk', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-page);
+            color: var(--text-dark);
+            padding: 60px 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header { text-align: center; margin-bottom: 60px; }
+        .header h1 { font-family: var(--font-display); font-size: 32px; letter-spacing: -1px; margin-bottom: 12px;}
+        .header p { color: var(--text-muted); }
+
+        /* ================= 展厅网格布局 ================= */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 32px;
+            max-width: 1000px;
+            width: 100%;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-light);
+            border-radius: 20px;
+            padding: 32px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.03);
+            display: flex;
+            flex-direction: column;
+            min-height: 280px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            border-bottom: 1px solid var(--border-light);
+            padding-bottom: 16px;
+        }
+
+        .card-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px;}
+        
+        .btn-play {
+            background: rgba(0,0,0,0.04); border: none; padding: 6px 12px;
+            border-radius: 100px; font-size: 12px; font-weight: 600; cursor: pointer;
+            display: flex; align-items: center; gap: 4px; transition: all 0.2s;
+        }
+        .btn-play:hover { background: var(--text-dark); color: white; }
+
+        /* AI 消息气泡基础样式 */
+        .message-bubble {
+            display: flex; gap: 16px;
+            line-height: 1.7; font-size: 15px; color: var(--text-dark);
+        }
+        .avatar {
+            width: 28px; height: 28px; background: #000; color: #fff;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .content-area { flex: 1; min-height: 100px; }
+
+        /* ================= 方案 1: 经典打字机 (Typewriter) ================= */
+        .cursor-blink {
+            display: inline-block;
+            width: 2px; height: 1em;
+            background-color: var(--text-dark);
+            vertical-align: middle;
+            margin-left: 2px;
+            animation: blink 0.8s step-end infinite;
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+        /* ================= 方案 2: 电影级焦外显影 (Cinematic Blur) ================= */
+        /* 每个词组作为一个 span 出现 */
+        .blur-word {
+            display: inline-block;
+            opacity: 0;
+            filter: blur(8px);
+            transform: translateY(4px) scale(0.98);
+            animation: focusIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            white-space: pre-wrap; /* 保持空格 */
+        }
+        @keyframes focusIn {
+            to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+        }
+
+        /* ================= 方案 3: 高热流光边缘 (Hot-Edge Glow) ================= */
+        .glow-word {
+            display: inline-block;
+            white-space: pre-wrap;
+            /* 初始状态：极热的金色发光 */
+            color: var(--accent-gold);
+            text-shadow: 0 0 12px rgba(212, 175, 55, 0.6);
+            /* 随时间冷却变暗 */
+            animation: coolDown 0.8s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
+        }
+        @keyframes coolDown {
+            to { color: var(--text-dark); text-shadow: none; }
+        }
+
+        /* ================= 方案 4: 全息遮罩擦除 (Mask Wipe) ================= */
+        .mask-wipe-container {
+            /* 使用 CSS mask 制造从左到右渐变透明的效果 */
+            -webkit-mask-image: linear-gradient(to right, black 50%, transparent 55%);
+            mask-image: linear-gradient(to right, black 50%, transparent 55%);
+            -webkit-mask-size: 210% 100%;
+            mask-size: 210% 100%;
+            /* 初始位置在最右边全透明，最终位置在最左边全不透明 */
+            -webkit-mask-position: 100% 0;
+            mask-position: 100% 0;
+        }
+        /* 这里的动画由 JS 控制 transition 实现平滑推进 */
+
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>Advanced Streaming UI</h1>
+        <p>4 premium ways to reveal AI-generated text.</p>
+    </div>
+
+    <div class="grid">
+        
+        <!-- 1. Typewriter -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><i data-lucide="terminal" style="width:18px;"></i> 1. Classic Typewriter</div>
+                <button class="btn-play" onclick="runTypewriter()"><i data-lucide="play" style="width:12px;"></i> Replay</button>
+            </div>
+            <div class="message-bubble">
+                <div class="avatar"><i data-lucide="hexagon" style="width:16px;"></i></div>
+                <div class="content-area" id="box-typewriter"></div>
+            </div>
+        </div>
+
+        <!-- 2. Cinematic Blur -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><i data-lucide="eye" style="width:18px;"></i> 2. Cinematic Blur Reveal</div>
+                <button class="btn-play" onclick="runBlurReveal()"><i data-lucide="play" style="width:12px;"></i> Replay</button>
+            </div>
+            <div class="message-bubble">
+                <div class="avatar"><i data-lucide="hexagon" style="width:16px;"></i></div>
+                <div class="content-area" id="box-blur"></div>
+            </div>
+        </div>
+
+        <!-- 3. Hot Edge Glow -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><i data-lucide="flame" style="width:18px;"></i> 3. Hot-Edge Glow Stream</div>
+                <button class="btn-play" onclick="runHotGlow()"><i data-lucide="play" style="width:12px;"></i> Replay</button>
+            </div>
+            <div class="message-bubble">
+                <div class="avatar"><i data-lucide="hexagon" style="width:16px;"></i></div>
+                <div class="content-area" id="box-glow"></div>
+            </div>
+        </div>
+
+        <!-- 4. Mask Wipe -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><i data-lucide="scan-line" style="width:18px;"></i> 4. Holographic Mask Wipe</div>
+                <button class="btn-play" onclick="runMaskWipe()"><i data-lucide="play" style="width:12px;"></i> Replay</button>
+            </div>
+            <div class="message-bubble">
+                <div class="avatar"><i data-lucide="hexagon" style="width:16px;"></i></div>
+                <!-- 预先放置文本，通过 CSS Mask 隐藏 -->
+                <div class="content-area mask-wipe-container" id="box-mask" style="transition: -webkit-mask-position 0s;">
+                    The mask wipe effect uses advanced CSS gradients to reveal text as a block. It avoids the layout shifts caused by injecting spans, creating a silky smooth, teleprompter-like reading experience.
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        const sampleText = "I have successfully refactored the authentication module. The new implementation uses a secure hash algorithm and stores the JWT tokens in HTTP-only cookies, effectively preventing XSS attacks.";
+        
+        // 模拟网络延迟生成器
+        function randomDelay(min, max) { return Math.floor(Math.random() * (max - min + 1) + min); }
+
+        /* ================= 1. 打字机 ================= */
+        let typeTimer;
+        function runTypewriter() {
+            clearTimeout(typeTimer);
+            const box = document.getElementById('box-typewriter');
+            box.innerHTML = '<span id="tw-text"></span><span class="cursor-blink"></span>';
+            const textSpan = document.getElementById('tw-text');
+            let i = 0;
+            
+            function typeNext() {
+                if(i < sampleText.length) {
+                    textSpan.innerHTML += sampleText.charAt(i);
+                    i++;
+                    typeTimer = setTimeout(typeNext, randomDelay(10, 30));
+                }
+            }
+            typeNext();
+        }
+
+        /* ================= 2. 焦外显影 (Vercel v0 风格) ================= */
+        let blurTimer;
+        function runBlurReveal() {
+            clearTimeout(blurTimer);
+            const box = document.getElementById('box-blur');
+            box.innerHTML = '';
+            
+            // 真实流式通常是逐个 Token 返回，我们这里用正则将文本切分成单词和标点
+            const tokens = sampleText.match(/[\w]+|[^\s\w]|\s+/g);
+            let i = 0;
+
+            function streamToken() {
+                if(i < tokens.length) {
+                    const span = document.createElement('span');
+                    span.className = 'blur-word';
+                    span.textContent = tokens[i];
+                    box.appendChild(span);
+                    i++;
+                    blurTimer = setTimeout(streamToken, randomDelay(20, 60));
+                }
+            }
+            streamToken();
+        }
+
+        /* ================= 3. 高热流光边缘 (极客风格) ================= */
+        let glowTimer;
+        function runHotGlow() {
+            clearTimeout(glowTimer);
+            const box = document.getElementById('box-glow');
+            box.innerHTML = '';
+            
+            const tokens = sampleText.match(/[\w]+|[^\s\w]|\s+/g);
+            let i = 0;
+
+            function streamToken() {
+                if(i < tokens.length) {
+                    const span = document.createElement('span');
+                    span.className = 'glow-word';
+                    span.textContent = tokens[i];
+                    box.appendChild(span);
+                    i++;
+                    glowTimer = setTimeout(streamToken, randomDelay(20, 50));
+                }
+            }
+            streamToken();
+        }
+
+        /* ================= 4. 全息遮罩擦除 (平滑无跳动) ================= */
+        let maskTimer;
+        function runMaskWipe() {
+            clearTimeout(maskTimer);
+            const box = document.getElementById('box-mask');
+            
+            // 重置状态：瞬间回到100%隐藏
+            box.style.transition = 'none';
+            box.style.webkitMaskPosition = '100% 0';
+            
+            // 强制重绘
+            void box.offsetWidth; 
+            
+            // 模拟流式加载进度：这里用一个 2秒 的平滑过渡来模拟
+            box.style.transition = '-webkit-mask-position 3s linear';
+            box.style.webkitMaskPosition = '0% 0';
+        }
+
+        // 页面加载后自动运行一次
+        setTimeout(() => {
+            runTypewriter();
+            runBlurReveal();
+            runHotGlow();
+            runMaskWipe();
+        }, 500);
+
+    </script>
+</body>
+</html>

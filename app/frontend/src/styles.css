@@ -178,29 +178,65 @@ input {
 
 .nav-section {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   padding: 0 12px;
 }
 
-.nav-primary,
+.nav-primary {
+  flex-shrink: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
 .nav-history {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  padding-bottom: 4px;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .nav-divider {
+  flex-shrink: 0;
   height: 1px;
   background-color: var(--border-color);
-  margin: 16px 12px;
+  margin: 16px 12px 4px 12px;
   transition: background-color 0.3s ease;
 }
 
+.nav-session-group {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.nav-session-group-pinned {
+  flex-shrink: 0;
+}
+
+.nav-session-group-regular {
+  flex: 1;
+  overflow: hidden;
+  min-height: 190px;
+}
+
+.nav-session-items {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
 .nav-title {
+  flex-shrink: 0;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 600;
   padding: 0 12px;
   margin-bottom: 8px;
-  margin-top: 16px;
+  margin-top: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -522,10 +558,27 @@ input {
 }
 
 .chat-history-view {
-  padding: 24px 24px 120px 24px;
+  padding: 24px 24px 160px 24px;
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
+  scroll-behavior: smooth;
+}
+
+/* ---- Turn anchor 容器 (timeline 锚点) ---- */
+.chat-turn {
+  scroll-margin-top: 40px;
+  border-radius: 16px;
+  transition: background-color 0.5s ease;
+}
+
+.chat-turn.target-highlight {
+  animation: turnHighlight 1.5s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+@keyframes turnHighlight {
+  0%   { background-color: var(--bg-hover); }
+  100% { background-color: transparent; }
 }
 
 .chat-scroll-anchor {
@@ -553,6 +606,56 @@ input {
 
 .message-panel-nested {
   gap: 12px;
+}
+
+/* ---- Generating... 流光指示器 ---- */
+.generating-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 0;
+  color: var(--text-secondary);
+}
+
+.generating-text {
+  background: linear-gradient(90deg,
+    var(--text-secondary) 0%,
+    var(--text-primary) 50%,
+    var(--text-secondary) 100%
+  );
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: generatingShimmer 3s linear infinite;
+}
+
+@keyframes generatingShimmer {
+  0%   { background-position: 150% 0; }
+  100% { background-position: -150% 0; }
+}
+
+/* 三个点独立淡入淡出 */
+.generating-dots {
+  display: inline-flex;
+  margin-left: 0;
+}
+
+.generating-dot {
+  display: inline-block;
+  width: 0.4em;
+  opacity: 0;
+  animation: dotFadeIn 1.4s ease-in-out infinite;
+}
+
+.generating-dot:nth-child(2) { animation-delay: 0.2s; }
+.generating-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dotFadeIn {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
 }
 
 .message-group {
@@ -623,6 +726,313 @@ input {
   font-size: 13.5px;
 }
 
+/* ================================================================
+   Otherone Markdown 渲染体系 (.otherone-md)
+   复刻 propertypes/markdown.html 的完整样式
+   ================================================================ */
+
+.otherone-md {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-primary);
+  word-wrap: break-word;
+}
+
+/* ---- 段落与基础内联 ---- */
+.otherone-md p {
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.otherone-md p:last-child {
+  margin-bottom: 0;
+}
+
+.otherone-md strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.otherone-md em {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.otherone-md del {
+  color: var(--text-muted);
+  text-decoration-color: var(--text-muted);
+}
+
+.otherone-md a {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--border-focus);
+  text-underline-offset: 4px;
+  transition: text-decoration-color 0.2s, color 0.2s;
+}
+
+.otherone-md a:hover {
+  text-decoration-color: var(--text-primary);
+}
+
+/* ---- 标题 ---- */
+.otherone-md h1,
+.otherone-md h2,
+.otherone-md h3,
+.otherone-md h4,
+.otherone-md h5,
+.otherone-md h6 {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 2em;
+  margin-bottom: 0.8em;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.otherone-md h1:first-child,
+.otherone-md h2:first-child {
+  margin-top: 0;
+}
+
+.otherone-md h1 {
+  font-size: 2em;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.3em;
+}
+
+.otherone-md h2 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.3em;
+}
+
+.otherone-md h3 { font-size: 1.25em; }
+.otherone-md h4 { font-size: 1.1em; }
+
+.otherone-md h5 {
+  font-size: 1em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* ---- 列表 ---- */
+.otherone-md ul,
+.otherone-md ol {
+  margin-top: 0;
+  margin-bottom: 20px;
+  padding-left: 2em;
+}
+
+.otherone-md li {
+  margin-bottom: 6px;
+}
+
+.otherone-md li > p {
+  margin-bottom: 6px;
+}
+
+/* 任务列表 */
+.otherone-md ul.contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.otherone-md .task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.otherone-md input[type="checkbox"] {
+  margin-top: 5px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--text-primary);
+  cursor: pointer;
+}
+
+/* ---- 引用块 ---- */
+.otherone-md blockquote {
+  margin: 0 0 20px 0;
+  padding: 16px 20px;
+  color: var(--text-secondary);
+  background-color: var(--bg-hover);
+  border-left: 4px solid var(--border-color);
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+
+.otherone-md blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- 行内代码 ---- */
+.otherone-md code:not(pre code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--danger-color);
+  background-color: var(--bg-code);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+}
+
+/* ---- 多行代码块 ---- */
+.otherone-md .code-wrapper {
+  margin: 24px 0;
+  border-radius: 12px;
+  background-color: #0d0d0d;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.otherone-md .code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #1a1a1a;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.otherone-md .code-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.otherone-md .mac-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.otherone-md .mac-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.otherone-md .mac-dot.red    { background: #ff5f56; }
+.otherone-md .mac-dot.yellow { background: #ffbd2e; }
+.otherone-md .mac-dot.green  { background: #27c93f; }
+
+.otherone-md .code-lang {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #888;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.otherone-md .code-copy-btn {
+  background: transparent;
+  border: none;
+  color: #888;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.otherone-md .code-copy-btn:hover {
+  color: #fff;
+}
+
+.otherone-md pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #444 #0d0d0d;
+}
+
+.otherone-md pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+.otherone-md pre::-webkit-scrollbar-track {
+  background: #0d0d0d;
+}
+
+.otherone-md pre::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 4px;
+}
+
+.otherone-md pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #e6e6e6;
+  background: transparent;
+  padding: 0;
+  border: none;
+}
+
+/* ---- 表格 ---- */
+.otherone-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 24px;
+  font-size: 14px;
+}
+
+.otherone-md th {
+  font-weight: 600;
+  text-align: left;
+  padding: 12px 16px;
+  background-color: var(--bg-hover);
+  border-bottom: 2px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.otherone-md td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.otherone-md tr:last-child td {
+  border-bottom: none;
+}
+
+.otherone-md tbody tr:hover td {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ---- 分割线与图片 ---- */
+.otherone-md hr {
+  height: 1px;
+  background-color: var(--border-color);
+  border: none;
+  margin: 32px 0;
+}
+
+.otherone-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  margin-bottom: 20px;
+}
+
+/* ---- 修复 Markdown 内容在 message-item-text 中的间距 ---- */
+.message-item-text .otherone-md {
+  /* 移除任何与 message-item-text 冲突的样式 */
+}
+
+/* ---- 在 thinking 折叠面板中的适配 ---- */
+.thinking-collapsible-content .otherone-md {
+  font-size: 14px;
+  line-height: 1.65;
+}
+
 .message-item-text pre {
   margin: 12px 0;
   overflow-x: auto;
@@ -632,6 +1042,25 @@ input {
   display: block;
   padding: 12px;
   line-height: 1.5;
+}
+
+/* Cinematic Blur Reveal — 流式文本入场动画 */
+/* 每个词独立 <span>，进入 DOM 时从模糊状态聚焦清晰 */
+.blur-word {
+  display: inline-block;
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(4px) scale(0.98);
+  animation: focusIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  white-space: pre-wrap;
+}
+
+@keyframes focusIn {
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
 }
 
 .message-tool-row {
@@ -689,7 +1118,6 @@ input {
 
 .state-running .tool-icon svg {
   color: var(--text-primary);
-  animation: spin 1.5s linear infinite;
 }
 
 .state-completed .tool-text {
@@ -765,6 +1193,168 @@ input {
 
 .message-item-thinking .collapsible-trigger {
   width: fit-content;
+}
+
+/* ================================================================
+   Timeline 导航 — 用户向上滚动时从右侧滑入
+   复刻 propertypes/scroll.html
+   ================================================================ */
+
+.timeline-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%) translateX(40px);
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(18, 18, 18, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 12px 0;
+  max-width: 196px;
+  min-width: 48px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1), right 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+  z-index: 100;
+}
+
+.app-shell[data-theme="light"] .timeline-nav {
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+}
+
+.timeline-nav.is-visible {
+  transform: translateY(-50%) translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.timeline-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding: 0;
+}
+
+.timeline-list::before {
+  content: '';
+  position: absolute;
+  left: 16px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--border-color);
+  z-index: 0;
+}
+
+.timeline-item {
+  position: relative;
+  z-index: 1;
+}
+
+.timeline-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px 8px 13px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.timeline-link:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+.timeline-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-color);
+  border: 2px solid var(--bg-app);
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.timeline-link:hover .timeline-dot {
+  background: var(--text-secondary);
+  transform: scale(1.2);
+}
+
+.timeline-link.active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.timeline-link.active .timeline-dot {
+  background: var(--text-primary);
+  box-shadow: 0 0 0 3px rgba(128, 128, 128, 0.15);
+}
+
+.timeline-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: inherit;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Compact 模式：产物面板打开或窗口很窄时 → 只显示圆点 */
+.timeline-nav.timeline-compact {
+  max-width: 56px;
+  min-width: 48px;
+  padding: 12px 4px;
+  border-radius: 28px;
+}
+
+.timeline-nav.timeline-compact .timeline-link {
+  justify-content: center;
+  padding: 8px 0;
+  gap: 0;
+}
+
+.timeline-nav.timeline-compact .timeline-label {
+  display: none;
+}
+
+.timeline-nav.timeline-compact .timeline-list::before {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* 窗口较窄时自动收拢为 dots-only */
+@media (max-width: 1100px) {
+  .timeline-nav {
+    max-width: 56px;
+    min-width: 48px;
+    padding: 12px 4px;
+    border-radius: 28px;
+  }
+
+  .timeline-nav .timeline-link {
+    justify-content: center;
+    padding: 8px 0;
+    gap: 0;
+  }
+
+  .timeline-nav .timeline-label {
+    display: none;
+  }
+
+  .timeline-nav .timeline-list::before {
+    left: 50%;
+    transform: translateX(-50%);
+  }
 }
 
 .thinking-collapsible-content {
@@ -850,8 +1440,54 @@ input {
   background: linear-gradient(to top, var(--bg-app) 70%, transparent);
   padding: 24px;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
   transition: opacity 0.3s ease;
+}
+
+/* ---- Scroll-to-bottom 浮动按钮 ---- */
+/* 通过 opacity + transform 实现入场/退场动画，
+   因为按钮在 React 中是条件渲染的，
+   动画靠 @keyframes scrollBtnIn 触发 */
+.scroll-to-bottom-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 8px var(--shadow-input);
+  animation: scrollBtnIn 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  z-index: 5;
+}
+
+.scroll-to-bottom-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+  box-shadow: 0 2px 14px var(--shadow-input);
+}
+
+.scroll-to-bottom-btn:active {
+  transform: scale(0.95);
+}
+
+@keyframes scrollBtnIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .input-box {
@@ -865,12 +1501,13 @@ input {
   flex-direction: column;
   gap: 10px;
   transition: all 0.2s;
-  box-shadow: 0 4px 24px var(--shadow-input);
+  box-shadow: 0 1px 12px var(--shadow-input);
   overflow: visible;
 }
 
 .input-box:focus-within {
   border-color: var(--border-focus);
+  box-shadow: 0 2px 18px var(--shadow-input);
 }
 
 .input-box textarea {
@@ -946,6 +1583,16 @@ input {
   background-color: var(--border-color);
   color: var(--text-muted);
   cursor: not-allowed;
+}
+
+.stop-btn {
+  background-color: var(--danger-color, #ef4444);
+  color: var(--text-inverse);
+}
+
+.stop-btn:hover {
+  background-color: #dc2626;
+  color: var(--text-inverse);
 }
 
 .reasoning-select-wrap {
@@ -3898,4 +4545,135 @@ select.model-input {
 
 .plugin-item-action[data-state="removing"] {
   opacity: 0.4;
+}
+
+/* ── 插件详情卡片（Plugin tab）── */
+.plugin-detail-card {
+  background: var(--bg-card, #1e1e2e);
+  border: 1px solid var(--border-color, #2a2a3a);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: border-color 0.2s;
+}
+.plugin-detail-card:hover {
+  border-color: var(--accent-color, #60a5fa);
+}
+.plugin-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.plugin-detail-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.plugin-detail-title h3 {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.plugin-detail-source {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  background: var(--bg-tag, #2a2a3a);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.plugin-detail-desc {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary, #aaa);
+  line-height: 1.5;
+}
+.plugin-detail-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plugin-meta-tag {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  background: var(--bg-tag, #2a2a3a);
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.plugin-install-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: var(--accent-color, #60a5fa);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+  align-self: flex-start;
+}
+.plugin-install-btn:hover { background: #4b8fda; }
+.plugin-install-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── 插件徽章（可执行文件标记）── */
+.plugin-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+/* ── 加载旋转动画 ── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ── 安装按钮状态 ── */
+.plugin-item-action.state-added {
+  background-color: rgba(255, 85, 85, 0.08);
+}
+.plugin-item-action.state-added:hover {
+  background-color: rgba(255, 85, 85, 0.18);
+}
+
+/* ── 错误栏 ── */
+.plugins-error-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  margin: 8px 16px;
+  background: rgba(255, 85, 85, 0.1);
+  border: 1px solid rgba(255, 85, 85, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--danger-color, #f87171);
+}
+.plugins-error-bar button {
+  background: none;
+  border: 1px solid currentColor;
+  color: inherit;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+/* ── 加载中提示 ── */
+.plugins-loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted, #888);
+  font-size: 14px;
 }

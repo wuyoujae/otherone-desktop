@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marketplace | Otherone</title>
+    <!-- 引入高级字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* ================= 核心设计变量 ================= */
+        :root {
+            --bg-page: #F9F9F8;
+            --bg-card: #FFFFFF;
+            --bg-hover: #F4F4F5;
+            
+            --text-dark: #050505;
+            --text-muted: #737373;
+            --text-light: #A0A0A0;
+            
+            --border-light: rgba(0, 0, 0, 0.08);
+            --border-hover: rgba(0, 0, 0, 0.2);
+            
+            --font-body: 'Inter', sans-serif;
+            --font-display: 'Space Grotesk', sans-serif;
+            
+            --bezier-award: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-page);
+            color: var(--text-dark);
+            display: flex;
+            justify-content: center;
+            padding: 60px 40px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* 主容器 */
+        .market-container {
+            width: 100%;
+            max-width: 1000px;
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+        }
+
+        /* ================= 头部与 Tabs ================= */
+        .market-header {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .header-title {
+            font-family: var(--font-display);
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -1px;
+        }
+
+        .tabs-wrapper {
+            display: flex;
+            gap: 32px;
+            border-bottom: 1px solid var(--border-light);
+            position: relative;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            padding: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: color 0.3s;
+            position: relative;
+        }
+        .tab-btn:hover { color: var(--text-dark); }
+        .tab-btn.active { color: var(--text-dark); font-weight: 600; }
+        
+        /* Tab 底部的丝滑下划线 */
+        .tab-btn::after {
+            content: '';
+            position: absolute;
+            bottom: -1px; left: 0; width: 100%; height: 2px;
+            background-color: var(--text-dark);
+            transform: scaleX(0);
+            transition: transform 0.3s var(--bezier-award);
+        }
+        .tab-btn.active::after { transform: scaleX(1); }
+
+        /* ================= 卡片网格布局 ================= */
+        .tab-panel {
+            display: none; /* 默认隐藏 */
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 24px;
+            animation: fadeIn 0.4s var(--bezier-award) forwards;
+        }
+        .tab-panel.active { display: grid; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ================= 动作卡片 (导入/创建) ================= */
+        .action-card {
+            background: transparent;
+            border: 1px dashed var(--border-light);
+            border-radius: 16px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: all 0.3s var(--bezier-award);
+            min-height: 140px;
+        }
+        .action-card:hover {
+            border-color: var(--border-hover);
+            background: rgba(0,0,0,0.02);
+            transform: translateY(-2px);
+        }
+        .action-icon {
+            width: 40px; height: 40px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-light);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-dark);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+        }
+        .action-title { font-weight: 600; font-size: 14px; color: var(--text-dark); }
+
+        /* ================= 插件商品卡片 ================= */
+        .item-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-light);
+            border-radius: 16px;
+            padding: 24px;
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            transition: all 0.3s var(--bezier-award);
+            position: relative;
+        }
+        .item-card:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+            transform: translateY(-2px);
+        }
+
+        /* 左侧 Icon */
+        .item-icon-box {
+            width: 48px; height: 48px;
+            background: var(--bg-hover);
+            border: 1px solid var(--border-light);
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0; color: var(--text-dark);
+        }
+
+        /* 中间内容 */
+        .item-content { flex: 1; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+        .item-title { font-family: var(--font-display); font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+        .item-author { font-size: 12px; color: var(--text-light); margin-bottom: 4px; }
+        .item-desc {
+            font-size: 13px; color: var(--text-muted); line-height: 1.5;
+            /* 超过两行显示省略号 */
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+        }
+
+        /* 右侧操作按钮 */
+        .btn-install {
+            width: 32px; height: 32px;
+            background: transparent;
+            border: 1px solid var(--border-light);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; color: var(--text-dark);
+            transition: all 0.2s; flex-shrink: 0;
+            margin-top: 4px;
+        }
+        .btn-install:hover { border-color: var(--text-dark); background: var(--bg-page); }
+
+        /* 正在下载状态 */
+        .btn-install.is-loading {
+            border-color: var(--text-light);
+            color: var(--text-muted);
+            pointer-events: none; /* 禁用点击 */
+        }
+        .btn-install.is-loading svg {
+            animation: spin 1s linear infinite;
+        }
+
+        /* 已安装状态 */
+        .btn-install.is-installed {
+            background: var(--text-dark);
+            border-color: var(--text-dark);
+            color: #fff;
+        }
+        .btn-install.is-installed:hover { background: #333; border-color: #333; }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    </style>
+</head>
+<body>
+
+    <div class="market-container">
+        
+        <!-- 头部与 Tabs -->
+        <div class="market-header">
+            <h1 class="header-title">Extensions Market</h1>
+            <div class="tabs-wrapper">
+                <button class="tab-btn active" onclick="switchTab('skills')">Skills</button>
+                <button class="tab-btn" onclick="switchTab('mcp')">MCP Servers</button>
+                <button class="tab-btn" onclick="switchTab('plugins')">Plugins</button>
+            </div>
+        </div>
+
+        <!-- ================= 面板 1: Skills ================= -->
+        <div class="tab-panel active" id="tab-skills">
+            
+            <!-- 动作卡片：导入 -->
+            <div class="action-card">
+                <div class="action-icon"><i data-lucide="import" style="width: 18px;"></i></div>
+                <div class="action-title">Import Skill</div>
+            </div>
+
+            <!-- 动作卡片：创建 -->
+            <div class="action-card">
+                <div class="action-icon"><i data-lucide="plus" style="width: 18px;"></i></div>
+                <div class="action-title">Create New Skill</div>
+            </div>
+
+            <!-- 常规列表 -->
+            <div class="item-card">
+                <div class="item-icon-box"><i data-lucide="code-2" style="width: 24px;"></i></div>
+                <div class="item-content">
+                    <div class="item-title">React Refactor Master</div>
+                    <div class="item-author">by Official</div>
+                    <div class="item-desc">A highly tuned skill for rewriting legacy React class components into modern hooks with Tailwind CSS.</div>
+                </div>
+                <!-- 按钮绑定点击事件 -->
+                <button class="btn-install" onclick="handleInstall(this)">
+                    <i data-lucide="plus" style="width: 16px;"></i>
+                </button>
+            </div>
+
+            <div class="item-card">
+                <div class="item-icon-box"><i data-lucide="file-spreadsheet" style="width: 24px;"></i></div>
+                <div class="item-content">
+                    <div class="item-title">Data Analyst</div>
+                    <div class="item-author">by Community</div>
+                    <div class="item-desc">Equips the agent with the ability to parse CSV/Excel files and generate Echarts configurations instantly.</div>
+                </div>
+                <button class="btn-install" onclick="handleInstall(this)">
+                    <i data-lucide="plus" style="width: 16px;"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- ================= 面板 2: MCP ================= -->
+        <div class="tab-panel" id="tab-mcp">
+            <div class="item-card">
+                <div class="item-icon-box"><i data-lucide="database" style="width: 24px;"></i></div>
+                <div class="item-content">
+                    <div class="item-title">Postgres MCP</div>
+                    <div class="item-author">by DB-Tools</div>
+                    <div class="item-desc">Provides the agent with read-only semantic access to your local or remote PostgreSQL databases.</div>
+                </div>
+                <!-- 预设一个已安装的状态供预览 -->
+                <button class="btn-install is-installed" onclick="handleInstall(this)">
+                    <i data-lucide="minus" style="width: 16px;"></i>
+                </button>
+            </div>
+            
+            <div class="item-card">
+                <div class="item-icon-box"><i data-lucide="book-open" style="width: 24px;"></i></div>
+                <div class="item-content">
+                    <div class="item-title">Notion Connector</div>
+                    <div class="item-author">by Workspace Inc.</div>
+                    <div class="item-desc">Connects your Notion workspace as a Model Context Protocol server for seamless RAG search.</div>
+                </div>
+                <button class="btn-install" onclick="handleInstall(this)">
+                    <i data-lucide="plus" style="width: 16px;"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- ================= 面板 3: Plugins ================= -->
+        <div class="tab-panel" id="tab-plugins">
+            <div class="item-card">
+                <div class="item-icon-box"><i data-lucide="terminal-square" style="width: 24px;"></i></div>
+                <div class="item-content">
+                    <div class="item-title">Advanced Terminal</div>
+                    <div class="item-author">by System</div>
+                    <div class="item-desc">Grants the agent permission to execute complex bash scripts safely within a sandboxed environment.</div>
+                </div>
+                <button class="btn-install" onclick="handleInstall(this)">
+                    <i data-lucide="plus" style="width: 16px;"></i>
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        // --- 1. Tab 切换逻辑 ---
+        function switchTab(tabId) {
+            // 移除所有激活状态
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
+
+            // 激活当前点击的
+            event.currentTarget.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+
+        // --- 2. 按钮点击下载/卸载逻辑 ---
+        function handleInstall(btn) {
+            // 如果已经是安装状态，点击则是“卸载” -> 变回加号
+            if (btn.classList.contains('is-installed')) {
+                // 加入微小的点击缩放动画
+                btn.style.transform = 'scale(0.8)';
+                setTimeout(() => {
+                    btn.classList.remove('is-installed');
+                    btn.innerHTML = '<i data-lucide="plus" style="width: 16px;"></i>';
+                    lucide.createIcons(); // 重新渲染 SVG
+                    btn.style.transform = 'scale(1)';
+                }, 150);
+                return;
+            }
+
+            // 否则，点击是“下载” -> 变为 Loading 状态
+            btn.style.transform = 'scale(0.8)';
+            setTimeout(() => {
+                btn.classList.add('is-loading');
+                btn.innerHTML = '<i data-lucide="loader-2" style="width: 16px;"></i>';
+                lucide.createIcons();
+                btn.style.transform = 'scale(1)';
+            }, 150);
+
+            // 模拟 1.5秒 下载时间
+            setTimeout(() => {
+                btn.style.transform = 'scale(0.8)';
+                setTimeout(() => {
+                    btn.classList.remove('is-loading');
+                    btn.classList.add('is-installed'); // 加上黑色底色
+                    btn.innerHTML = '<i data-lucide="minus" style="width: 16px;"></i>'; // 变成减号
+                    lucide.createIcons();
+                    btn.style.transform = 'scale(1)';
+                }, 150);
+            }, 1500);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,387 @@
+`WebFetch` 工具的实现完全位于 `rust/crates/tools/src/lib.rs` 文件中，不依赖 runtime crate 的 file_ops 模块。
+
+## 核心实现文件
+
+### `rust/crates/tools/src/lib.rs`
+
+这是 WebFetch 工具的唯一实现文件，包含以下关键组件：
+
+#### 数据结构
+- `WebFetchInput` - 输入参数结构体，包含 URL 和提示词 [1](#6-0) 
+- `WebFetchOutput` - 输出结果结构体，包含字节数、状态码、结果内容、耗时和最终 URL [2](#6-1) 
+
+#### 核心函数
+- `run_web_fetch()` - 工具执行入口，调用 `execute_web_fetch` 并序列化结果 [3](#6-2) 
+- `execute_web_fetch()` - 核心执行函数，处理 HTTP 请求和响应 [4](#6-3) 
+
+#### 辅助函数
+- `build_http_client()` - 构建 HTTP 客户端，配置超时和重定向策略 [5](#6-4) 
+- `normalize_fetch_url()` - 规范化 URL，将 HTTP 升级为 HTTPS（localhost 除外） [6](#6-5) 
+- `normalize_fetched_content()` - 根据内容类型处理响应内容（HTML 转文本） [7](#6-6) 
+- `summarize_web_fetch()` - 根据提示词生成摘要或预览 [8](#6-7) 
+
+## 实现流程
+
+```mermaid
+graph TD
+    A[Tool Call: WebFetch] --> B[run_web_fetch in tools/src/lib.rs]
+    B --> C[execute_web_fetch - 核心执行]
+    C --> D[build_http_client - 构建 HTTP 客户端]
+    D --> E[normalize_fetch_url - 规范化 URL]
+    E --> F[HTTP GET request - 发送 HTTP 请求]
+    F --> G[Extract status and headers - 提取状态和头信息]
+    G --> H[Read response body - 读取响应体]
+    H --> I[normalize_fetched_content - 处理内容类型]
+    I --> J[summarize_web_fetch - 生成摘要]
+    J --> K[Return WebFetchOutput]
+    K --> L[to_pretty_json - JSON序列化]
+    L --> M[Final JSON Response]
+```
+
+## 核心实现逻辑
+
+`execute_web_fetch()` 函数的实现包含以下关键步骤：
+
+1. **构建 HTTP 客户端** - 使用 `build_http_client()` 创建配置了 20 秒超时和最多 10 次重定向的客户端 [9](#6-8) 
+2. **URL 规范化** - 使用 `normalize_fetch_url()` 将 HTTP 升级为 HTTPS（localhost 除外） [10](#6-9) 
+3. **发送 HTTP 请求** - 使用 GET 方法请求 URL [11](#6-10) 
+4. **提取响应信息** - 获取状态码、最终 URL、内容类型和响应体 [12](#6-11) 
+5. **内容处理** - 根据内容类型调用 `normalize_fetched_content()` 处理 HTML 或纯文本 [13](#6-12) 
+6. **生成摘要** - 使用 `summarize_web_fetch()` 根据提示词生成适当的摘要或预览 [14](#6-13) 
+7. **返回结果** - 返回包含详细信息的 `WebFetchOutput` [15](#6-14) 
+
+## 关键特性
+
+### HTTP 客户端配置
+`build_http_client()` 配置了以下参数：
+
+```rust
+Client::builder()
+    .timeout(Duration::from_secs(20))
+    .redirect(reqwest::redirect::Policy::limited(10))
+    .user_agent("clawd-rust-tools/0.1")
+    .build()
+``` [16](#6-15) 
+
+### URL 安全升级
+`normalize_fetch_url()` 自动将 HTTP 升级为 HTTPS，但保留 localhost 的 HTTP 连接：
+
+```rust
+if parsed.scheme() == "http" {
+    let host = parsed.host_str().unwrap_or_default();
+    if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+        // 升级到 HTTPS
+    }
+}
+``` [17](#6-16) 
+
+### 内容类型处理
+`normalize_fetched_content()` 根据内容类型决定是否将 HTML 转换为纯文本 [7](#6-6) 。
+
+### 智能摘要生成
+`summarize_web_fetch()` 根据提示词内容生成不同类型的响应：
+
+- 如果提示词包含 "title"，提取页面标题
+- 如果提示词包含 "summary" 或 "summarize"，生成 900 字符预览
+- 否则返回提示词和内容预览 [18](#6-17) 
+
+## 工具规范
+
+WebFetch 工具在 `mvp_tool_specs()` 中定义为：
+
+```rust
+ToolSpec {
+    name: "WebFetch",
+    description: "Fetch a URL, convert it into readable text, and answer a prompt about it.",
+    input_schema: json!({
+        "type": "object",
+        "properties": {
+            "url": { "type": "string", "format": "uri" },
+            "prompt": { "type": "string" }
+        },
+        "required": ["url", "prompt"],
+        "additionalProperties": false
+    }),
+    required_permission: PermissionMode::ReadOnly,
+}
+``` [19](#6-18) 
+
+## 测试覆盖
+
+实现包含测试用例验证基本功能和标题提取：
+
+- 测试提示词感知的摘要生成 [20](#6-19) 
+- 测试纯文本支持和无效 URL 拒绝 [21](#6-20) 
+
+## Notes
+
+WebFetch 工具与其他文件系统工具不同，它完全在 `tools` crate 中实现，不依赖 `runtime` crate 的 `file_ops` 模块 [4](#6-3) 。工具使用 PascalCase 命名（`WebFetch`），这与文件系统工具的 snake_case 命名（`read_file`）不同 [22](#6-21) 。根据 ROADMAP，WebFetch 是 40 个暴露的工具规范之一 [23](#6-22) 。
+
+Wiki pages you might want to explore:
+- [Runtime and Conversation Engine (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#2.2)
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+Wiki pages you might want to explore:
+- [Repository Structure (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#1.2)
+- [Glossary (ultraworkers/claw-code)](/wiki/ultraworkers/claw-code#6)
+
+### Citations
+
+**File:** rust/crates/tools/src/lib.rs (L501-515)
+```rust
+        ToolSpec {
+            name: "WebFetch",
+            description:
+                "Fetch a URL, convert it into readable text, and answer a prompt about it.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "format": "uri" },
+                    "prompt": { "type": "string" }
+                },
+                "required": ["url", "prompt"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2156-2159)
+```rust
+#[allow(clippy::needless_pass_by_value)]
+fn run_web_fetch(input: WebFetchInput) -> Result<String, String> {
+    to_pretty_json(execute_web_fetch(&input)?)
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2418-2421)
+```rust
+struct WebFetchInput {
+    url: String,
+    prompt: String,
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2696-2705)
+```rust
+struct WebFetchOutput {
+    bytes: usize,
+    code: u16,
+    #[serde(rename = "codeText")]
+    code_text: String,
+    result: String,
+    #[serde(rename = "durationMs")]
+    duration_ms: u128,
+    url: String,
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2899-2931)
+```rust
+fn execute_web_fetch(input: &WebFetchInput) -> Result<WebFetchOutput, String> {
+    let started = Instant::now();
+    let client = build_http_client()?;
+    let request_url = normalize_fetch_url(&input.url)?;
+    let response = client
+        .get(request_url.clone())
+        .send()
+        .map_err(|error| error.to_string())?;
+
+    let status = response.status();
+    let final_url = response.url().to_string();
+    let code = status.as_u16();
+    let code_text = status.canonical_reason().unwrap_or("Unknown").to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = response.text().map_err(|error| error.to_string())?;
+    let bytes = body.len();
+    let normalized = normalize_fetched_content(&body, &content_type);
+    let result = summarize_web_fetch(&final_url, &input.prompt, &normalized, &body, &content_type);
+
+    Ok(WebFetchOutput {
+        bytes,
+        code,
+        code_text,
+        result,
+        duration_ms: started.elapsed().as_millis(),
+        url: final_url,
+    })
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2987-2994)
+```rust
+fn build_http_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("clawd-rust-tools/0.1")
+        .build()
+        .map_err(|error| error.to_string())
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L2996-3009)
+```rust
+fn normalize_fetch_url(url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    if parsed.scheme() == "http" {
+        let host = parsed.host_str().unwrap_or_default();
+        if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+            let mut upgraded = parsed;
+            upgraded
+                .set_scheme("https")
+                .map_err(|()| String::from("failed to upgrade URL to https"))?;
+            return Ok(upgraded.to_string());
+        }
+    }
+    Ok(parsed.to_string())
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L3024-3030)
+```rust
+fn normalize_fetched_content(body: &str, content_type: &str) -> String {
+    if content_type.contains("html") {
+        html_to_text(body)
+    } else {
+        body.trim().to_string()
+    }
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L3032-3055)
+```rust
+fn summarize_web_fetch(
+    url: &str,
+    prompt: &str,
+    content: &str,
+    raw_body: &str,
+    content_type: &str,
+) -> String {
+    let lower_prompt = prompt.to_lowercase();
+    let compact = collapse_whitespace(content);
+
+    let detail = if lower_prompt.contains("title") {
+        extract_title(content, raw_body, content_type).map_or_else(
+            || preview_text(&compact, 600),
+            |title| format!("Title: {title}"),
+        )
+    } else if lower_prompt.contains("summary") || lower_prompt.contains("summarize") {
+        preview_text(&compact, 900)
+    } else {
+        let preview = preview_text(&compact, 900);
+        format!("Prompt: {prompt}\nContent preview:\n{preview}")
+    };
+
+    format!("Fetched {url}\n{detail}")
+}
+```
+
+**File:** rust/crates/tools/src/lib.rs (L7258-7295)
+```rust
+    fn web_fetch_returns_prompt_aware_summary() {
+        let server = TestServer::spawn(Arc::new(|request_line: &str| {
+            assert!(request_line.starts_with("GET /page "));
+            HttpResponse::html(
+                200,
+                "OK",
+                "<html><head><title>Ignored</title></head><body><h1>Test Page</h1><p>Hello <b>world</b> from local server.</p></body></html>",
+            )
+        }));
+
+        let result = execute_tool(
+            "WebFetch",
+            &json!({
+                "url": format!("http://{}/page", server.addr()),
+                "prompt": "Summarize this page"
+            }),
+        )
+        .expect("WebFetch should succeed");
+
+        let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output["code"], 200);
+        let summary = output["result"].as_str().expect("result string");
+        assert!(summary.contains("Fetched"));
+        assert!(summary.contains("Test Page"));
+        assert!(summary.contains("Hello world from local server"));
+
+        let titled = execute_tool(
+            "WebFetch",
+            &json!({
+                "url": format!("http://{}/page", server.addr()),
+                "prompt": "What is the page title?"
+            }),
+        )
+        .expect("WebFetch title query should succeed");
+        let titled_output: serde_json::Value = serde_json::from_str(&titled).expect("valid json");
+        let titled_summary = titled_output["result"].as_str().expect("result string");
+        assert!(titled_summary.contains("Title: Ignored"));
+    }
+```
+
+**File:** rust/crates/tools/src/lib.rs (L7298-7329)
+```rust
+    fn web_fetch_supports_plain_text_and_rejects_invalid_url() {
+        let server = TestServer::spawn(Arc::new(|request_line: &str| {
+            assert!(request_line.starts_with("GET /plain "));
+            HttpResponse::text(200, "OK", "plain text response")
+        }));
+
+        let result = execute_tool(
+            "WebFetch",
+            &json!({
+                "url": format!("http://{}/plain", server.addr()),
+                "prompt": "Show me the content"
+            }),
+        )
+        .expect("WebFetch should succeed for text content");
+
+        let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output["url"], format!("http://{}/plain", server.addr()));
+        assert!(output["result"]
+            .as_str()
+            .expect("result")
+            .contains("plain text response"));
+
+        let error = execute_tool(
+            "WebFetch",
+            &json!({
+                "url": "not a url",
+                "prompt": "Summarize"
+            }),
+        )
+        .expect_err("invalid URL should fail");
+        assert!(error.contains("relative URL without a base") || error.contains("invalid"));
+    }
+```
+
+**File:** ROADMAP.md (L4459-4469)
+```markdown
+     # For canonical "WebFetch" (PascalCase):
+     $ claw --allowedTools WebFetch status | head -1
+     { ... accepted (exact)
+     $ claw --allowedTools webfetch status | head -1
+     { ... accepted (case-insensitive)
+     $ claw --allowedTools WEBFETCH status | head -1
+     { ... accepted
+     $ claw --allowedTools web_fetch status | head -1
+     {"error":"unsupported tool in --allowedTools: web_fetch"}   # REJECTED
+     $ claw --allowedTools web-fetch status | head -1
+     {"error":"unsupported tool in --allowedTools: web-fetch"}   # REJECTED
+```
+
+**File:** PARITY.md (L147-153)
+```markdown
+## Tool Surface: 40 exposed tool specs on `main`
+
+- `mvp_tool_specs()` in `rust/crates/tools/src/lib.rs` exposes **40** tool specs.
+- Core execution is present for `bash`, `read_file`, `write_file`, `edit_file`, `glob_search`, and `grep_search`.
+- Existing product tools in `mvp_tool_specs()` include `WebFetch`, `WebSearch`, `TodoWrite`, `Skill`, `Agent`, `ToolSearch`, `NotebookEdit`, `Sleep`, `SendUserMessage`, `Config`, `EnterPlanMode`, `ExitPlanMode`, `StructuredOutput`, `REPL`, and `PowerShell`.
+- The 9-lane push replaced pure fixed-payload stubs for `Task*`, `Team*`, `Cron*`, `LSP`, and MCP tools with registry-backed handlers on `main`.
+- `Brief` is handled as an execution alias in `execute_tool()`, but it is not a separately exposed tool spec in `mvp_tool_specs()`.
+```
