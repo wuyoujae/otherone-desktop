@@ -1,16 +1,11 @@
 import {
   BotMessageSquare,
-  CheckCircle2,
-  CircleAlert,
-  Clock3,
   Loader2,
-  MessageSquareText,
   Pause,
   Play,
   QrCode,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   Smartphone,
   X,
 } from 'lucide-react';
@@ -19,13 +14,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   beginWeixinClawbotLogin,
   checkWeixinClawbotLogin,
-  loadWeixinClawbotEvents,
   loadWeixinClawbotStatus,
+  resetWeixinClawbot,
   startWeixinClawbot,
   stopWeixinClawbot,
 } from '../services/weixinClawbotService';
 import type {
-  WeixinClawbotEvent,
   WeixinClawbotStatus,
   WeixinLoginQr,
 } from '../types/weixinClawbot';
@@ -39,7 +33,7 @@ type WeixinClawbotPageProps = {
   onNotice?: (type: NoticeKind, title: string, description?: string) => void;
 };
 
-type BusyAction = 'login' | 'check' | 'start' | 'stop' | 'refresh' | null;
+type BusyAction = 'login' | 'check' | 'start' | 'stop' | 'reset' | 'refresh' | null;
 
 const STATUS_LABELS: Record<string, string> = {
   not_configured: '未连接',
@@ -65,12 +59,6 @@ function formatTime(value: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function eventLabel(direction: string): string {
-  if (direction === 'inbound') return '收到';
-  if (direction === 'outbound') return '回复';
-  return '系统';
 }
 
 function toBase64Utf8(value: string): string {
@@ -99,7 +87,6 @@ function directQrImageSrc(value: string): string {
 
 export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps) {
   const [status, setStatus] = useState<WeixinClawbotStatus | null>(null);
-  const [events, setEvents] = useState<WeixinClawbotEvent[]>([]);
   const [qr, setQr] = useState<WeixinLoginQr | null>(null);
   const [verifyCode, setVerifyCode] = useState('');
   const [busy, setBusy] = useState<BusyAction>(null);
@@ -111,7 +98,31 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
 
   const running = status?.running === true;
   const configured = status?.configured === true;
+  const waitingForLogin = qr !== null && !configured;
   const qrDisplayContent = useMemo(() => (qr ? qr.qrcodeImgContent.trim() : ''), [qr]);
+  const stepTitle = running
+    ? '微信监听已启动'
+    : configured
+      ? '连接已完成，下一步启动监听'
+      : waitingForLogin
+        ? '请使用微信扫码确认'
+        : '先连接微信 ClawBot';
+  const stepDescription = running
+    ? '现在可以直接在微信里给 ClawBot 发消息；需要暂停时点击停止监听。'
+    : configured
+      ? 'Token 已保存，但后台还没有开始轮询微信消息。'
+      : waitingForLogin
+        ? '扫码并在手机端确认后，点击主按钮检查连接；应用也会自动检查。'
+        : '首次使用需要先生成二维码并扫码登录。';
+  const primaryActionLabel = running
+    ? '停止监听'
+    : configured
+      ? '启动监听'
+      : waitingForLogin
+        ? '我已扫码，检查连接'
+        : '生成登录二维码';
+  const primaryActionBusy = busy === 'login' || busy === 'check' || busy === 'start' || busy === 'stop' || checking;
+  const showResetAction = running || status?.status === 'stopped' || status?.status === 'error';
 
   useEffect(() => {
     let cancelled = false;
@@ -157,12 +168,8 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
     if (!silent) setBusy('refresh');
     try {
       setError('');
-      const [nextStatus, nextEvents] = await Promise.all([
-        loadWeixinClawbotStatus(),
-        loadWeixinClawbotEvents(),
-      ]);
+      const nextStatus = await loadWeixinClawbotStatus();
       setStatus(nextStatus);
-      setEvents(nextEvents);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -276,6 +283,45 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
     }
   }, [onNotice, refresh]);
 
+  const handleReset = useCallback(async () => {
+    const confirmed = window.confirm('这会清除当前微信 ClawBot 连接和会话映射，需要重新扫码连接。确定继续吗？');
+    if (!confirmed) return;
+
+    setBusy('reset');
+    try {
+      setError('');
+      setQr(null);
+      setVerifyCode('');
+      setLoginMessage('');
+      setQrImageDataUrl('');
+      setQrRenderError('');
+      setStatus(await resetWeixinClawbot());
+      onNotice?.('info', '微信 ClawBot 连接已重置', '请重新生成二维码并扫码连接。');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      onNotice?.('fail', '重置微信 ClawBot 失败', message);
+    } finally {
+      setBusy(null);
+    }
+  }, [onNotice]);
+
+  const handlePrimaryAction = useCallback(() => {
+    if (running) {
+      void handleStop();
+      return;
+    }
+    if (configured) {
+      void handleStart();
+      return;
+    }
+    if (waitingForLogin) {
+      void handleCheckLogin();
+      return;
+    }
+    void handleBeginLogin();
+  }, [configured, handleBeginLogin, handleCheckLogin, handleStart, handleStop, running, waitingForLogin]);
+
   return (
     <div className="weixin-page">
       <div className="weixin-nav">
@@ -317,6 +363,23 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
       )}
 
       <div className="weixin-body">
+        <section className="weixin-command-hero">
+          <div className="weixin-command-copy">
+            <span className="weixin-panel-kicker">Weixin Channel</span>
+            <h1>微信 ClawBot</h1>
+            <p>
+              微信私聊消息会进入同一个 Agent 会话；连续发送自动聚合，运行中补充的消息会在
+              Agent 的安全时机插入到当前对话。
+            </p>
+          </div>
+          <div className="weixin-command-state">
+            <span className={`weixin-token-state ${configured ? 'is-ready' : ''}`}>
+              {configured ? 'Token 已保存' : '等待扫码'}
+            </span>
+            <strong>{running ? '通道正在监听微信消息' : '通道未启动'}</strong>
+          </div>
+        </section>
+
         <section className="weixin-status-grid">
           <div className="weixin-status-cell">
             <span className="weixin-status-label">连接状态</span>
@@ -336,14 +399,19 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
           </div>
         </section>
 
-        <section className="weixin-main-grid">
-          <div className="weixin-panel">
-            <div className="weixin-panel-header">
+        <section className="weixin-console-surface">
+          <div className="weixin-console-main">
+            <div className="weixin-console-heading">
               <div>
-                <span className="weixin-panel-kicker">Channel</span>
+                <span className="weixin-panel-kicker">Channel Control</span>
                 <h2>微信直连通道</h2>
               </div>
-              <Smartphone style={{ width: 22, height: 22 }} />
+              <Smartphone style={{ width: 24, height: 24 }} />
+            </div>
+
+            <div className="weixin-step-hint">
+              <strong>{stepTitle}</strong>
+              <span>{stepDescription}</span>
             </div>
 
             <div className="weixin-connection-row">
@@ -357,28 +425,40 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
             </div>
 
             <div className="weixin-actions">
-              <button className="weixin-primary-btn" type="button" disabled={busy !== null} onClick={handleBeginLogin}>
-                {busy === 'login' ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <QrCode style={iconSize} />}
-                <span>{configured ? '重新扫码' : '扫码连接'}</span>
-              </button>
               <button
-                className="weixin-secondary-btn"
+                className="weixin-primary-btn"
                 type="button"
-                disabled={!configured || running || busy !== null}
-                onClick={handleStart}
+                disabled={busy !== null || checking}
+                onClick={handlePrimaryAction}
               >
-                {busy === 'start' ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Play style={iconSize} />}
-                <span>启动</span>
+                {primaryActionBusy ? (
+                  <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />
+                ) : running ? (
+                  <Pause style={iconSize} />
+                ) : configured ? (
+                  <Play style={iconSize} />
+                ) : waitingForLogin ? (
+                  <RotateCcw style={iconSize} />
+                ) : (
+                  <QrCode style={iconSize} />
+                )}
+                <span>{primaryActionLabel}</span>
               </button>
-              <button
-                className="weixin-secondary-btn"
-                type="button"
-                disabled={!running || busy !== null}
-                onClick={handleStop}
-              >
-                {busy === 'stop' ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Pause style={iconSize} />}
-                <span>停止</span>
-              </button>
+              {showResetAction && (
+                <button
+                  className="weixin-secondary-btn"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={handleReset}
+                >
+                  {busy === 'reset' ? (
+                    <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <RotateCcw style={iconSize} />
+                  )}
+                  <span>重置连接</span>
+                </button>
+              )}
             </div>
 
             {qr && (
@@ -407,47 +487,9 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
                     placeholder="配对码（如手机端要求）"
                     onChange={(event) => setVerifyCode(event.target.value)}
                   />
-                  <button
-                    className="weixin-secondary-btn"
-                    type="button"
-                    disabled={busy !== null || checking}
-                    onClick={() => void handleCheckLogin()}
-                  >
-                    {checking || busy === 'check' ? (
-                      <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />
-                    ) : (
-                      <RotateCcw style={iconSize} />
-                    )}
-                    <span>检查状态</span>
-                  </button>
                 </div>
               </div>
             )}
-          </div>
-
-          <div className="weixin-panel">
-            <div className="weixin-panel-header">
-              <div>
-                <span className="weixin-panel-kicker">Policy</span>
-                <h2>Agent 安全边界</h2>
-              </div>
-              <ShieldCheck style={{ width: 22, height: 22 }} />
-            </div>
-
-            <div className="weixin-policy-list">
-              <div className="weixin-policy-item">
-                <CheckCircle2 style={iconSize} />
-                <span>微信消息使用独立会话上下文。</span>
-              </div>
-              <div className="weixin-policy-item">
-                <CheckCircle2 style={iconSize} />
-                <span>仅开放搜索、网页读取、Skill、Plugin Tool。</span>
-              </div>
-              <div className="weixin-policy-item">
-                <CircleAlert style={iconSize} />
-                <span>第一版不处理群聊、文件、图片、语音和多账号。</span>
-              </div>
-            </div>
 
             {status?.lastError && (
               <div className="weixin-last-error">
@@ -456,34 +498,27 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
               </div>
             )}
           </div>
-        </section>
 
-        <section className="weixin-events-panel">
-          <div className="weixin-events-header">
-            <div>
-              <span className="weixin-panel-kicker">Activity</span>
-              <h2>最近消息</h2>
+          <div className="weixin-console-rail">
+            <span className="weixin-panel-kicker">Runtime Flow</span>
+            <div className="weixin-flow-list">
+              <div className="weixin-flow-step">
+                <span className="weixin-flow-index">01</span>
+                <span>接收微信私聊文本</span>
+              </div>
+              <div className="weixin-flow-step">
+                <span className="weixin-flow-index">02</span>
+                <span>3 秒静默期聚合多条消息</span>
+              </div>
+              <div className="weixin-flow-step">
+                <span className="weixin-flow-index">03</span>
+                <span>运行中消息排队插入当前 Agent</span>
+              </div>
+              <div className="weixin-flow-step">
+                <span className="weixin-flow-index">04</span>
+                <span>用最新微信上下文发送回复</span>
+              </div>
             </div>
-            <Clock3 style={{ width: 20, height: 20 }} />
-          </div>
-
-          <div className="weixin-events-list">
-            {events.length === 0 ? (
-              <div className="weixin-empty-state">
-                <MessageSquareText style={{ width: 24, height: 24 }} />
-                <span>暂无微信 ClawBot 事件</span>
-              </div>
-            ) : events.map((event) => (
-              <div className={`weixin-event-row direction-${event.direction}`} key={event.id}>
-                <span className="weixin-event-direction">{eventLabel(event.direction)}</span>
-                <div className="weixin-event-body">
-                  <span className="weixin-event-summary">{event.summary || event.error || '-'}</span>
-                  <span className="weixin-event-meta">
-                    {event.fromUserId || '-'} · {event.status || '-'} · {formatTime(event.createdAt)}
-                  </span>
-                </div>
-              </div>
-            ))}
           </div>
         </section>
       </div>

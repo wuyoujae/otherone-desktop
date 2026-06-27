@@ -134,6 +134,8 @@ The frontend must warn users that migration copies data and switches paths, whil
 
 The frontend appends a user message and a running AI text item immediately, streams `assistant_delta` into that item, then reloads the session from localfile on `complete`.
 
+`send_chat_message` accepts the legacy single `prompt` field and an optional `prompts` array. When `prompts` contains multiple non-empty items, the backend writes each item as a separate localfile `user` entry before invoking `otherone-agent`, then starts the Agent with `user_prompt: None` so the framework reads the already-written entries without adding a merged duplicate.
+
 Backend stream mapping extracts visible text from common chunk delta fields. Answer text is emitted as `assistant_delta`; thinking text fields such as `reasoning_content`, `reasoningContent`, `reasoning`, `thinking`, and `thought` are emitted as `assistant_thinking_delta`. Empty chunk events are ignored.
 
 The frontend keeps a small pending stream-event buffer per session. If a chunk arrives before React has committed the newly created session state, the event is replayed once that session becomes active. Stream events are targeted to the Tauri `main` window first, then fall back to a global emit if needed.

@@ -6,19 +6,27 @@ export type SendChatMessageRequest = {
   sessionId?: string;
   modelId: string;
   prompt: string;
+  prompts?: string[];
   reasoningEffort: ReasoningEffort;
   contextCompressionEnabled: boolean;
   branchModeEnabled: boolean;
   targetModeEnabled: boolean;
+  memoryEnabled: boolean;
 };
 
 export type SendChatMessageResponse = {
   sessionId: string;
 };
 
+export type EnqueueChatMessageRequest = {
+  sessionId: string;
+  prompt: string;
+  prompts?: string[];
+};
+
 export type ChatStreamEvent = {
   sessionId: string;
-  eventType: 'user_entry' | 'assistant_delta' | 'assistant_thinking_delta' | 'thinking' | 'tool_calls' | 'tool_call' | 'complete' | 'error' | 'cancelled';
+  eventType: 'user_entry' | 'queued_user_prompts' | 'assistant_delta' | 'assistant_thinking_delta' | 'thinking' | 'tool_calls' | 'tool_call' | 'complete' | 'error' | 'cancelled';
   content: string;
   rawChunk?: unknown;
   error?: string;
@@ -35,6 +43,15 @@ export async function sendChatMessageToStorage(payload: SendChatMessageRequest) 
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SendChatMessageResponse>('send_chat_message', { request: payload });
+}
+
+export async function enqueueChatMessageToStorage(payload: EnqueueChatMessageRequest) {
+  if (!isTauriRuntime()) {
+    throw new Error('真实对话需要在桌面应用中运行。');
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('enqueue_chat_message', { request: payload });
 }
 
 export async function cancelChatMessage(sessionId: string) {

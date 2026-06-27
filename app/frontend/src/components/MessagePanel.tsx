@@ -21,6 +21,23 @@ import { parseMarkdown, MarkdownRenderer, useStreamingMarkdown } from '../utils/
 
 const iconSize = { width: 14, height: 14 };
 
+function getMessagePanelRowClass(message: MessageGroup, index: number, messages: MessageGroup[]) {
+  const classes = ['message-panel-row'];
+  const previous = messages[index - 1];
+
+  if (message.role === 'user') {
+    classes.push('chat-turn');
+  }
+
+  if (previous?.role === message.role) {
+    classes.push('message-panel-row-compact');
+  } else if (previous) {
+    classes.push('message-panel-row-spaced');
+  }
+
+  return classes.join(' ');
+}
+
 // ============================================================
 // MessagePanel — 使用 react-virtuoso 虚拟滚动，仅渲染可见区域的消息
 // ============================================================
@@ -55,10 +72,10 @@ export const MessagePanel = memo(
         data={messages}
         followOutput={isStreaming ? 'smooth' : undefined}
         computeItemKey={(index, item) => item.id ?? index}
-        itemContent={(_index, message) => (
+        itemContent={(index, message) => (
           <div
             id={message.role === 'user' ? `turn-${message.id}` : undefined}
-            className={message.role === 'user' ? 'chat-turn' : undefined}
+            className={getMessagePanelRowClass(message, index, messages)}
           >
             <MessageGroupView
               message={message}

@@ -39,12 +39,14 @@ import { MessagePanel } from './components/MessagePanel';
 import { ModelSettings } from './components/ModelSettings';
 import { EngineSettingsPanel } from './components/EngineSettingsPanel';
 import { PluginsPage } from './components/PluginsPage';
+import { PersonalizationPage } from './components/PersonalizationPage';
 import { WorkflowPage } from './components/WorkflowPage';
 import { WeixinClawbotPage } from './components/WeixinClawbotPage';
 import { SearchOverlay } from './components/SearchOverlay';
 import { ArtifactsPanel, type FileArtifact } from './components/ArtifactsPanel';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ToastViewport, type ToastKind, type ToastNotice } from './components/ToastSystem';
+import { WindowTitleBar } from './components/WindowTitleBar';
 import { defaultApiConfigs } from './data/defaultApiConfigs';
 import { loadApiConfigsFromStorage, saveApiConfigsToStorage } from './services/apiConfigStorage';
 import {
@@ -58,7 +60,7 @@ import {
 import { testAiModel } from './services/aiModelTest';
 import { VirtuosoHandle } from 'react-virtuoso';
 import { listFileArtifacts, listenToFileArtifacts, type FileArtifactRecord } from './services/artifactStorage';
-import { cancelChatMessage, listenToChatStream, sendChatMessageToStorage, type ChatStreamEvent } from './services/chatStorage';
+import { cancelChatMessage, enqueueChatMessageToStorage, listenToChatStream, sendChatMessageToStorage, type ChatStreamEvent } from './services/chatStorage';
 import { loadSessionsFromStorage, readSessionFromStorage, updateSessionTitleInStorage } from './services/sessionStorage';
 import { defaultEngineSettings, type StorageSettings } from './types/appSettings';
 import type { ModelOption, ProviderConfig, ReasoningEffort } from './types/apiConfig';
@@ -72,7 +74,7 @@ import type {
   ToolMessageItem,
 } from './types/session';
 
-type ViewName = 'new' | 'chat' | 'settings' | 'workflow' | 'plugins' | 'weixinClawbot';
+type ViewName = 'new' | 'chat' | 'settings' | 'workflow' | 'plugins' | 'personalization' | 'weixinClawbot';
 type ThemeName = 'dark' | 'light';
 type SettingsSection = 'general' | 'models' | 'api' | 'storage' | 'knowledge';
 type StorageRootKey = keyof StorageSettings;
@@ -96,6 +98,7 @@ type PendingChatSend = {
   contextCompressionEnabled: boolean;
   branchModeEnabled: boolean;
   targetModeEnabled: boolean;
+  memoryEnabled: boolean;
 };
 
 const iconSize = { width: 16, height: 16 };
@@ -203,6 +206,34 @@ function completeStreamItems(items: MessageItem[]): MessageItem[] {
         status: 'completed' as const,
       };
     });
+}
+
+function completeAiGroupInSession(session: SessionDetail, groupId: string, updatedAt: string): SessionDetail {
+  const groupIndex = session.messages.findIndex((group) => group.id === groupId);
+  if (groupIndex < 0) return session;
+
+  const group = session.messages[groupIndex];
+  if (group.role !== 'ai') return session;
+
+  const messages = [...session.messages];
+  messages[groupIndex] = {
+    ...group,
+    items: completeStreamItems(group.items),
+  };
+
+  return { ...session, updatedAt, messages };
+}
+
+function isEmptyRunningAiGroup(session: SessionDetail | null | undefined, groupId: string | undefined) {
+  if (!session || !groupId) return false;
+  const group = session.messages.find((message) => message.id === groupId);
+  if (!group || group.role !== 'ai') return false;
+
+  return group.items.every((item) => {
+    if (item.type === 'text') return !item.content;
+    if (item.type === 'thinking') return !item.content;
+    return false;
+  });
 }
 
 function collectStreamItemOverlay(session: SessionDetail | null | undefined): StreamItemOverlay {
@@ -579,6 +610,8 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [providers, setProviders] = useState<ProviderConfig[]>(defaultApiConfigs);
   const [selectedModelId, setSelectedModelId] = useState('');
+  const [memoryModelId, setMemoryModelId] = useState('');
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [isSavingConfigs, setIsSavingConfigs] = useState(false);
   const [isSavingEngine, setIsSavingEngine] = useState(false);
   const [isMigratingStorage, setIsMigratingStorage] = useState(false);
@@ -624,6 +657,7 @@ export function App() {
   const toastCounterRef = useRef(0);
   const streamIterRef = useRef<Map<string, number>>(new Map());
   const activeStreamGroupIdRef = useRef<Map<string, string>>(new Map());
+  const queuedStreamAiGroupIdRef = useRef<Map<string, string>>(new Map());
   const [showScrollButton, setShowScrollButton] = useState(false);
   const timelineHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStreamEventsRef = useRef<Map<string, ChatStreamEvent[]>>(new Map());
@@ -812,6 +846,22 @@ export function App() {
       setSelectedModelId(defaultModel?.id ?? modelOptions[0].id);
     }
   }, [modelOptions, providers, selectedModelId]);
+
+  useEffect(() => {
+    if (modelOptions.length === 0) {
+      setMemoryModelId('');
+      return;
+    }
+
+    const selectedStillExists = modelOptions.some((model) => model.id === memoryModelId);
+    if (selectedStillExists) {
+      return;
+    }
+
+    const selectedChatModel = modelOptions.find((model) => model.id === selectedModelId);
+    const defaultModel = providers.flatMap((provider) => provider.models).find((model) => model.defaultModel);
+    setMemoryModelId(selectedChatModel?.id ?? defaultModel?.id ?? modelOptions[0].id);
+  }, [memoryModelId, modelOptions, providers, selectedModelId]);
 
   useEffect(() => {
     document.documentElement.style.colorScheme = theme;
@@ -1512,6 +1562,42 @@ export function App() {
     });
   }, []);
 
+  const applyQueuedUserPromptsBoundary = useCallback((sessionId: string) => {
+    const bufferedEvents = pendingStreamEventsRef.current.get(sessionId);
+    if (bufferedEvents?.length) {
+      pendingStreamEventsRef.current.set(sessionId, []);
+      applyStreamEventsToSession(sessionId, bufferedEvents);
+    }
+
+    const queuedAiGroupId = queuedStreamAiGroupIdRef.current.get(sessionId);
+    if (!queuedAiGroupId) return;
+
+    const updatedAt = new Date().toISOString();
+    const currentAiGroupId = activeStreamGroupIdRef.current.get(sessionId);
+
+    if (currentAiGroupId && currentAiGroupId !== queuedAiGroupId) {
+      const cachedSession = sessionCacheRef.current.get(sessionId);
+      if (cachedSession) {
+        const completedSession = completeAiGroupInSession(cachedSession, currentAiGroupId, updatedAt);
+        sessionCacheRef.current.set(sessionId, completedSession);
+        rememberStreamItemOverlay(sessionId, completedSession);
+        setActiveSession((current) => (current?.id === sessionId ? completedSession : current));
+      } else {
+        setActiveSession((current) => {
+          if (!current || current.id !== sessionId) return current;
+          const completedSession = completeAiGroupInSession(current, currentAiGroupId, updatedAt);
+          sessionCacheRef.current.set(sessionId, completedSession);
+          rememberStreamItemOverlay(sessionId, completedSession);
+          return completedSession;
+        });
+      }
+    }
+
+    activeStreamGroupIdRef.current.set(sessionId, queuedAiGroupId);
+    queuedStreamAiGroupIdRef.current.delete(sessionId);
+    streamIterRef.current.set(sessionId, 0);
+  }, [applyStreamEventsToSession, rememberStreamItemOverlay]);
+
   /**
    * 核心：流式事件处理器。
    * - delta 类事件 → 入缓冲，rAF 批量 flush
@@ -1520,6 +1606,11 @@ export function App() {
   const handleChatStreamEvent = useCallback(
     (event: ChatStreamEvent) => {
       let completedStreamItems: MessageItem[] | undefined;
+      if (event.eventType === 'queued_user_prompts') {
+        applyQueuedUserPromptsBoundary(event.sessionId);
+        return;
+      }
+
       const isDelta =
         event.eventType === 'assistant_delta' ||
         event.eventType === 'assistant_thinking_delta' ||
@@ -1556,6 +1647,7 @@ export function App() {
       // 终端后处理
       if (event.eventType === 'complete') {
         streamingSessionIdsRef.current.delete(event.sessionId);
+        queuedStreamAiGroupIdRef.current.delete(event.sessionId);
         pendingStreamEventsRef.current.delete(event.sessionId);
         const completedStreamGroupId = activeStreamGroupIdRef.current.get(event.sessionId);
         void refreshSessionFromStorage(event.sessionId, completedStreamItems).finally(() => {
@@ -1568,6 +1660,7 @@ export function App() {
       if (event.eventType === 'error') {
         streamingSessionIdsRef.current.delete(event.sessionId);
         activeStreamGroupIdRef.current.delete(event.sessionId);
+        queuedStreamAiGroupIdRef.current.delete(event.sessionId);
         pendingStreamEventsRef.current.delete(event.sessionId);
         pushToast('error', '对话执行失败', event.error ?? event.content);
       }
@@ -1575,11 +1668,12 @@ export function App() {
       if (event.eventType === 'cancelled') {
         streamingSessionIdsRef.current.delete(event.sessionId);
         activeStreamGroupIdRef.current.delete(event.sessionId);
+        queuedStreamAiGroupIdRef.current.delete(event.sessionId);
         pendingStreamEventsRef.current.delete(event.sessionId);
         pushToast('info', '对话已被终止');
       }
     },
-    [applyStreamEventsToSession, pushToast, refreshSessionFromStorage, scheduleStreamFlush],
+    [applyQueuedUserPromptsBoundary, applyStreamEventsToSession, pushToast, refreshSessionFromStorage, scheduleStreamFlush],
   );
 
   useEffect(() => {
@@ -1617,6 +1711,7 @@ export function App() {
 
     streamingSessionIdsRef.current.delete(sessionId);
     activeStreamGroupIdRef.current.delete(sessionId);
+    queuedStreamAiGroupIdRef.current.delete(sessionId);
     streamIterRef.current.delete(sessionId);
     pendingStreamEventsRef.current.delete(sessionId);
 
@@ -1662,10 +1757,12 @@ export function App() {
         sessionId: batch.sessionId,
         modelId: batch.modelId,
         prompt,
+        prompts: batch.prompts,
         reasoningEffort: batch.reasoningEffort,
         contextCompressionEnabled: batch.contextCompressionEnabled,
         branchModeEnabled: batch.branchModeEnabled,
         targetModeEnabled: batch.targetModeEnabled,
+        memoryEnabled: batch.memoryEnabled,
       });
     } catch (error) {
       streamingSessionIdsRef.current.delete(batch.sessionId);
@@ -1750,13 +1847,104 @@ export function App() {
     schedulePendingChatSend(batch);
   };
 
+  const appendPromptToRunningChat = async (sessionId: string, prompt: string) => {
+    const createdAt = new Date().toISOString();
+    const { turnId, userGroup } = createOptimisticUserGroup(sessionId, prompt, createdAt);
+    const cachedSessionBeforeSend = sessionCacheRef.current.get(sessionId);
+    const previousSession = cachedSessionBeforeSend ?? activeSession;
+    const previousSummaryIndex = sessions.findIndex((session) => session.id === sessionId);
+    const previousSummary = previousSummaryIndex >= 0 ? sessions[previousSummaryIndex] : null;
+
+    const currentAiGroupId = activeStreamGroupIdRef.current.get(sessionId);
+    const canReuseCurrentAiGroup =
+      !queuedStreamAiGroupIdRef.current.has(sessionId) &&
+      isEmptyRunningAiGroup(previousSession, currentAiGroupId);
+    let queuedAiGroupId = canReuseCurrentAiGroup
+      ? currentAiGroupId
+      : queuedStreamAiGroupIdRef.current.get(sessionId);
+    let createdQueuedAiGroupId = '';
+    let queuedAiGroup: MessageGroup | null = null;
+
+    if (!queuedAiGroupId) {
+      queuedAiGroupId = streamAiGroupId(sessionId, turnId);
+      createdQueuedAiGroupId = queuedAiGroupId;
+      queuedAiGroup = createOptimisticAiGroup(queuedAiGroupId, createdAt);
+      queuedStreamAiGroupIdRef.current.set(sessionId, queuedAiGroupId);
+    }
+
+    const applyOptimisticQueuedGroups = (session: SessionDetail): SessionDetail => {
+      if (queuedAiGroup) {
+        return {
+          ...session,
+          updatedAt: createdAt,
+          messages: [...session.messages, userGroup, queuedAiGroup],
+        };
+      }
+
+      return insertUserGroupBeforeAiGroup(session, userGroup, queuedAiGroupId, createdAt);
+    };
+
+    if (previousSession) {
+      const updatedSession = applyOptimisticQueuedGroups(previousSession);
+      sessionCacheRef.current.set(sessionId, updatedSession);
+      setActiveSession((current) => (current?.id === sessionId ? applyOptimisticQueuedGroups(current) : current));
+    }
+
+    setSessions((current) => {
+      const existing = current.find((session) => session.id === sessionId);
+      if (!existing) return current;
+
+      return [
+        { ...existing, updatedAt: createdAt, lastMessage: prompt, messageCount: existing.messageCount + 1 },
+        ...current.filter((session) => session.id !== sessionId),
+      ];
+    });
+
+    setMessage('');
+    setPromptPanelOpen(false);
+    requestAnimationFrame(resizePrompt);
+
+    try {
+      await enqueueChatMessageToStorage({
+        sessionId,
+        prompt,
+        prompts: [prompt],
+      });
+    } catch (error) {
+      if (createdQueuedAiGroupId && queuedStreamAiGroupIdRef.current.get(sessionId) === createdQueuedAiGroupId) {
+        queuedStreamAiGroupIdRef.current.delete(sessionId);
+      }
+
+      if (previousSession) {
+        sessionCacheRef.current.set(sessionId, previousSession);
+      }
+
+      setActiveSession((current) => (current?.id === sessionId ? previousSession : current));
+      setSessions((current) => {
+        const withoutOptimistic = current.filter((session) => session.id !== sessionId);
+        if (!previousSummary) return withoutOptimistic;
+
+        const insertAt = Math.min(Math.max(previousSummaryIndex, 0), withoutOptimistic.length);
+        return [
+          ...withoutOptimistic.slice(0, insertAt),
+          previousSummary,
+          ...withoutOptimistic.slice(insertAt),
+        ];
+      });
+      setMessage(prompt);
+      pushToast('error', '发送插入消息失败', error instanceof Error ? error.message : String(error));
+      requestAnimationFrame(resizePrompt);
+    }
+  };
+
   const handleCancelMessage = async () => {
     if (!activeSession) return;
 
     const sessionId = activeSession.id;
     if (cancelPendingChatSend(sessionId)) return;
-    // 立即在前端标记流式结束
     streamingSessionIdsRef.current.delete(sessionId);
+    queuedStreamAiGroupIdRef.current.delete(sessionId);
+    // 立即在前端标记流式结束
 
     try {
       await cancelChatMessage(sessionId);
@@ -1781,7 +1969,10 @@ export function App() {
     }
 
     // 检查目标 session 是否已在流式传输中
-    if (streamingSessionIdsRef.current.has(sessionId)) return;
+    if (streamingSessionIdsRef.current.has(sessionId)) {
+      await appendPromptToRunningChat(sessionId, prompt);
+      return;
+    }
 
     const createdAt = new Date().toISOString();
     const { turnId, userGroupId, userGroup } = createOptimisticUserGroup(sessionId, prompt, createdAt);
@@ -1866,19 +2057,27 @@ export function App() {
       contextCompressionEnabled,
       branchModeEnabled,
       targetModeEnabled,
+      memoryEnabled,
     };
 
     pendingChatSendsRef.current.set(sessionId, batch);
     schedulePendingChatSend(batch);
   };
 
-  const showChatUi = view !== 'settings' && view !== 'workflow' && view !== 'plugins' && view !== 'weixinClawbot';
+  const showChatUi =
+    view !== 'settings' &&
+    view !== 'workflow' &&
+    view !== 'plugins' &&
+    view !== 'personalization' &&
+    view !== 'weixinClawbot';
   const currentModelValue = selectedModelId || selectorOptions[0].value;
   const pinnedSessions = sessions.filter((session) => session.pinned);
   const regularSessions = sessions.filter((session) => !session.pinned);
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
+      <WindowTitleBar />
+      <div className="app-body">
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="logo-area">
@@ -1906,7 +2105,13 @@ export function App() {
             <SidebarItem icon={<Search style={iconSize} />} label="全局搜索" compact={sidebarCollapsed} onClick={() => setSearchOpen(true)} />
             <SidebarItem icon={<Network style={iconSize} />} label="工作流" compact={sidebarCollapsed} onClick={() => switchView('workflow')} />
             <SidebarItem icon={<Blocks style={iconSize} />} label="插件管理" compact={sidebarCollapsed} onClick={() => switchView('plugins')} />
-            <SidebarItem icon={<SlidersHorizontal style={iconSize} />} label="个性化" compact={sidebarCollapsed} />
+            <SidebarItem
+              active={activeItem === 'personalization'}
+              icon={<SlidersHorizontal style={iconSize} />}
+              label="个性化"
+              compact={sidebarCollapsed}
+              onClick={() => switchView('personalization', 'personalization')}
+            />
             <SidebarItem
               active={activeItem === 'weixinClawbot'}
               icon={<BotMessageSquare style={iconSize} />}
@@ -2418,6 +2623,14 @@ export function App() {
             )}
           </div>
         </section>
+        ) : view === 'personalization' ? (
+          <PersonalizationPage
+            memoryEnabled={memoryEnabled}
+            memoryModelId={memoryModelId}
+            modelOptions={modelOptions}
+            onMemoryEnabledChange={setMemoryEnabled}
+            onMemoryModelChange={setMemoryModelId}
+          />
         ) : view === 'workflow' ? (
           <WorkflowPage onClose={() => switchView('new')} onNotice={pushToast} />
         ) : view === 'weixinClawbot' ? (
@@ -2426,6 +2639,7 @@ export function App() {
           <PluginsPage onClose={() => switchView('new')} />
         )}
       </main>
+      </div>
 
       <ArtifactsPanel
         addedFiles={addedFiles}

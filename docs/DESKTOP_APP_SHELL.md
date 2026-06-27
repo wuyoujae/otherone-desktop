@@ -18,6 +18,7 @@
 ## Prototype Coverage
 - Sidebar navigation, new chat view, chat history view, settings view, dark/light theme, and input send-button state are implemented.
 - Initial 1280x800 visual comparison against the prototype is within SVG/antialiasing tolerance.
+- On Windows, the Tauri window uses a custom React title bar instead of native decorations. The left area is blank and draggable, the background follows the system light/dark preference, and the right controls provide minimize, maximize/restore, and close.
 
 ## Verification
 - `npm run build`

@@ -2650,6 +2650,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
+name = "mac-notification-sys"
+version = "0.6.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd604973958ddcc11b561193c0fb96ba146506ef2f231ef2e7c35fd2cbc9beca"
+dependencies = [
+ "cc",
+ "log",
+ "objc2",
+ "objc2-foundation",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "macro_magic"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2928,6 +2942,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "notify-rust"
+version = "4.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5b4c1b4f2aa9f25f63a7a49d3dd0ed567b3670da15330a66b29434be899b891"
+dependencies = [
+ "futures-lite",
+ "log",
+ "mac-notification-sys",
+ "serde",
+ "tauri-winrt-notification",
+ "zbus",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3134,6 +3162,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.0",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -3295,14 +3324,15 @@ dependencies = [
 
 [[package]]
 name = "otherone"
-version = "0.1.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5383ec9e081d99e510ce82e7ffe8ebdb648df30333fd569a194402630d2ccb36"
+checksum = "a9656e45a6e8b934da8b1e386c3698586f141cc2a84912451ffda2e3ee70397c"
 dependencies = [
  "otherone-agent",
  "otherone-ai",
  "otherone-context",
  "otherone-mcp",
+ "otherone-memory",
  "otherone-skills",
  "otherone-storage",
  "otherone-tools",
@@ -3312,15 +3342,16 @@ dependencies = [
 
 [[package]]
 name = "otherone-agent"
-version = "0.1.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "774cd749368fb69c63fb4c102cd1f0658be338a6de1e7919c967cc96a610acc6"
+checksum = "41ffcc4c4b816b8c89d4c90a3c10b41849e424d241f95b9414598e82dddb95fb"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
  "otherone-ai",
  "otherone-context",
+ "otherone-memory",
  "otherone-storage",
  "otherone-tools",
  "serde",
@@ -3332,9 +3363,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-ai"
-version = "0.1.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaa6b526165583083176983dc98f9eabedae1172d68f55f377f87858e45b1632"
+checksum = "76a7a4e970780bee98363a7832111a4e9e0f8908170009cb141e52d4b6f14a91"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3351,9 +3382,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-context"
-version = "0.1.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e9aee0092d083e551f262420be31b8f42d99a62bd61ad3a7e43d025d099dbc4"
+checksum = "f92b8065093f3c9fa2d51688cd55e1fd56bac8d13d7f07cd114c394f6c67a332"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3367,9 +3398,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-mcp"
-version = "0.1.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "871668249bd57ae5a6191e994733995bc0d303b6415f11538d4f3a6f6bb75bb3"
+checksum = "5cd28cd9f19c2a8ecaf783d270359ac78f2898aadf7667fc6f336052deaf95e7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3383,10 +3414,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "otherone-skills"
-version = "0.1.0"
+name = "otherone-memory"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0843a5d5a7ad2a2bd31a5dff6996b9f737492e273cc45ef55e0889c9a90cbdc5"
+checksum = "fea4173813d71ed5cc3dd1d7698296986620bbd4b8a021dc94c90b6f4edeb300"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "otherone-skills"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d81ca85e3df3b4c2ad36268b14fc01a64f04601a503e50b19dc60a0e4c551732"
 dependencies = [
  "anyhow",
  "serde",
@@ -3397,9 +3441,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-storage"
-version = "0.1.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac40c9e6e9c323c880b5abd08d987a87004be647c29cd1d888350522a39fb131"
+checksum = "95a004eea07b99b18ae93477e6f9d3254ce6d25eb2a3ee2e5810b2f86ac2e382"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3420,9 +3464,9 @@ dependencies = [
 
 [[package]]
 name = "otherone-tools"
-version = "0.1.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fd81dcd69e786d3d119aacb0eeadb46457e12ef81dedd50bd2893843ca6159"
+checksum = "709874c5e157101c5c639066a6d73fc6de3f18aa6095613b92ab316843bcf9d4"
 dependencies = [
  "anyhow",
  "otherone-ai",
@@ -3447,6 +3491,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tokio",
  "walkdir",
@@ -3648,7 +3693,7 @@ checksum = "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
 dependencies = [
  "base64 0.22.1",
  "indexmap 2.14.0",
- "quick-xml",
+ "quick-xml 0.39.4",
  "serde",
  "time",
 ]
@@ -3822,6 +3867,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -5297,6 +5351,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-notification"
+version = "2.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01fc2c5ff41105bd1f7242d8201fdf3efd70749b82fa013a17f2126357d194cc"
+dependencies = [
+ "log",
+ "notify-rust",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "tauri-plugin-opener"
 version = "2.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5416,6 +5489,18 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "tauri-winrt-notification"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b1e66e07de489fe43a46678dd0b8df65e0c973909df1b60ba33874e297ba9b9"
+dependencies = [
+ "quick-xml 0.37.5",
+ "thiserror 2.0.18",
+ "windows",
+ "windows-version",
 ]
 
 [[package]]

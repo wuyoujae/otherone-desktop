@@ -4,7 +4,7 @@ use reqwest::blocking::{Client, RequestBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -18,13 +18,36 @@ const CHANNEL_VERSION: &str = "2.4.3";
 const ILINK_APP_ID: &str = "bot";
 const ILINK_APP_CLIENT_VERSION: &str = "132099";
 const BOT_AGENT: &str = "OtherOne/0.1.0 (weixin-clawbot)";
+const MESSAGE_BATCH_DELAY_MS: u64 = 3_000;
+const MESSAGE_ACTIVE_RETRY_DELAY_MS: u64 = 1_000;
 
 static RUNTIME: LazyLock<Mutex<Option<WeixinRuntime>>> = LazyLock::new(|| Mutex::new(None));
+static MESSAGE_STATE: LazyLock<Mutex<WeixinMessageState>> =
+    LazyLock::new(|| Mutex::new(WeixinMessageState::default()));
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct WeixinMessageState {
+    pending: HashMap<String, PendingWeixinBatch>,
+    active: HashMap<String, ActiveWeixinRun>,
+}
+
+struct ActiveWeixinRun {
+    commands: Option<chat::ChannelAgentCommandSender>,
+    context_token: String,
+}
+
+struct PendingWeixinBatch {
+    account_id: String,
+    from_user_id: String,
+    context_token: String,
+    messages: Vec<IncomingText>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +378,55 @@ pub fn weixin_clawbot_stop(app: AppHandle) -> Result<WeixinClawbotStatus, String
 }
 
 #[tauri::command]
+pub fn weixin_clawbot_reset(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
+    {
+        let mut runtime = RUNTIME
+            .lock()
+            .map_err(|_| "无法锁定微信 ClawBot 运行状态。".to_string())?;
+        if let Some(mut current) = runtime.take() {
+            current.stop.store(true, Ordering::SeqCst);
+            if current
+                .handle
+                .as_ref()
+                .map(|handle| handle.is_finished())
+                .unwrap_or(false)
+            {
+                if let Some(handle) = current.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+    }
+
+    {
+        let mut state = MESSAGE_STATE
+            .lock()
+            .map_err(|_| "无法锁定微信消息队列。".to_string())?;
+        state.pending.clear();
+        state.active.clear();
+    }
+
+    let conn = open_weixin_db(&app)?;
+    conn.execute(
+        "DELETE FROM weixin_clawbot_sessions WHERE account_id = ?1",
+        params![DEFAULT_ACCOUNT_ID],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM weixin_clawbot_events WHERE account_id = ?1",
+        params![DEFAULT_ACCOUNT_ID],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM weixin_clawbot_accounts WHERE id = ?1",
+        params![DEFAULT_ACCOUNT_ID],
+    )
+    .map_err(|error| error.to_string())?;
+
+    build_status(&app)
+}
+
+#[tauri::command]
 pub fn weixin_clawbot_list_events(app: AppHandle) -> Result<Vec<WeixinClawbotEvent>, String> {
     let conn = open_weixin_db(&app)?;
     let mut stmt = conn
@@ -461,7 +533,7 @@ fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    handle_incoming_text(&app, &account_id, &client, message);
+                    enqueue_incoming_text(&app, &account_id, &client, message);
                 }
 
                 if message_count == 0 {
@@ -490,7 +562,7 @@ fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
     }
 }
 
-fn handle_incoming_text(
+fn enqueue_incoming_text(
     app: &AppHandle,
     account_id: &str,
     client: &IlinkClient,
@@ -506,48 +578,415 @@ fn handle_incoming_text(
         "",
     );
 
+    let from_user_id = message.from_user_id.clone();
+    let context_token = message.context_token.clone();
+    let key = weixin_message_key(account_id, &from_user_id);
+    let generation = {
+        let Ok(mut state) = MESSAGE_STATE.lock() else {
+            record_event(
+                app,
+                account_id,
+                "system",
+                &from_user_id,
+                "锁定微信消息队列失败",
+                "error",
+                "",
+            );
+            return;
+        };
+
+        let entry = state
+            .pending
+            .entry(key)
+            .or_insert_with(|| PendingWeixinBatch {
+                account_id: account_id.to_string(),
+                from_user_id: from_user_id.clone(),
+                context_token: String::new(),
+                messages: Vec::new(),
+                generation: 0,
+            });
+        entry.context_token = context_token;
+        entry.messages.push(message);
+        entry.generation = entry.generation.saturating_add(1);
+        entry.generation
+    };
+
+    spawn_weixin_batch_flush(
+        app.clone(),
+        account_id.to_string(),
+        from_user_id,
+        client.clone(),
+        generation,
+        MESSAGE_BATCH_DELAY_MS,
+    );
+}
+
+fn spawn_weixin_batch_flush(
+    app: AppHandle,
+    account_id: String,
+    from_user_id: String,
+    client: IlinkClient,
+    generation: u64,
+    delay_ms: u64,
+) {
+    thread::spawn(move || {
+        thread::sleep(StdDuration::from_millis(delay_ms));
+        flush_weixin_batch(app, account_id, from_user_id, client, generation);
+    });
+}
+
+fn flush_weixin_batch(
+    app: AppHandle,
+    account_id: String,
+    from_user_id: String,
+    client: IlinkClient,
+    generation: u64,
+) {
+    let key = weixin_message_key(&account_id, &from_user_id);
+    let mut retry_generation = None;
+    let mut batch_to_start = None;
+    let mut batch_to_insert = None;
+    let mut active_commands = None;
+
+    {
+        let Ok(mut state) = MESSAGE_STATE.lock() else {
+            record_event(
+                &app,
+                &account_id,
+                "system",
+                &from_user_id,
+                "锁定微信消息队列失败",
+                "error",
+                "",
+            );
+            return;
+        };
+
+        let current_generation = state.pending.get(&key).map(|entry| entry.generation);
+        if current_generation != Some(generation) {
+            return;
+        }
+
+        if state.active.contains_key(&key) {
+            active_commands = state.active.get(&key).and_then(|run| run.commands.clone());
+            if active_commands.is_some() {
+                batch_to_insert = state.pending.remove(&key);
+                if let Some(batch) = &batch_to_insert {
+                    if let Some(active) = state.active.get_mut(&key) {
+                        active.context_token = batch.context_token.clone();
+                    }
+                }
+            } else if let Some(entry) = state.pending.get_mut(&key) {
+                entry.generation = entry.generation.saturating_add(1);
+                retry_generation = Some(entry.generation);
+            }
+        } else {
+            batch_to_start = state.pending.remove(&key);
+            if let Some(batch) = &batch_to_start {
+                state.active.insert(
+                    key.clone(),
+                    ActiveWeixinRun {
+                        commands: None,
+                        context_token: batch.context_token.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    if let Some(next_generation) = retry_generation {
+        spawn_weixin_batch_flush(
+            app,
+            account_id,
+            from_user_id,
+            client,
+            next_generation,
+            MESSAGE_ACTIVE_RETRY_DELAY_MS,
+        );
+        return;
+    }
+
+    if let Some(batch) = batch_to_insert {
+        let prompts = prompts_from_batch(&batch);
+        if prompts.is_empty() {
+            return;
+        }
+
+        if let Some(sender) = active_commands {
+            match chat::enqueue_channel_agent_prompts(&sender, prompts) {
+                Ok(()) => record_event(
+                    &app,
+                    &batch.account_id,
+                    "system",
+                    &batch.from_user_id,
+                    "运行中消息已插入 Agent",
+                    "inserted",
+                    "",
+                ),
+                Err(error) => {
+                    record_event(
+                        &app,
+                        &batch.account_id,
+                        "system",
+                        &batch.from_user_id,
+                        "运行中消息插入失败，等待重试",
+                        "error",
+                        &error,
+                    );
+
+                    let next_generation = {
+                        let Ok(mut state) = MESSAGE_STATE.lock() else {
+                            return;
+                        };
+                        if let Some(entry) = state.pending.get_mut(&key) {
+                            let mut messages = batch.messages;
+                            messages.append(&mut entry.messages);
+                            entry.messages = messages;
+                            if entry.context_token.trim().is_empty() {
+                                entry.context_token = batch.context_token;
+                            }
+                            entry.generation = entry.generation.saturating_add(1);
+                            entry.generation
+                        } else {
+                            let mut retry_batch = batch;
+                            retry_batch.generation = retry_batch.generation.saturating_add(1);
+                            let generation = retry_batch.generation;
+                            state.pending.insert(key.clone(), retry_batch);
+                            generation
+                        }
+                    };
+                    spawn_weixin_batch_flush(
+                        app,
+                        account_id,
+                        from_user_id,
+                        client,
+                        next_generation,
+                        MESSAGE_ACTIVE_RETRY_DELAY_MS,
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    if let Some(batch) = batch_to_start {
+        process_incoming_text_batch(&app, &client, batch, key);
+    }
+}
+
+fn prompts_from_batch(batch: &PendingWeixinBatch) -> Vec<String> {
+    batch
+        .messages
+        .iter()
+        .map(|message| message.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+}
+
+fn start_weixin_channel_run(
+    app: &AppHandle,
+    key: &str,
+    agent_session_id: String,
+    prompts: Vec<String>,
+) -> Result<chat::ChannelAgentRun, String> {
+    let run =
+        chat::start_channel_agent_run(app.clone(), agent_session_id, prompts, "Weixin ClawBot")?;
+
+    if let Ok(mut state) = MESSAGE_STATE.lock() {
+        if let Some(active) = state.active.get_mut(key) {
+            active.commands = Some(run.commands.clone());
+        }
+    }
+
+    Ok(run)
+}
+
+fn process_incoming_text_batch(
+    app: &AppHandle,
+    client: &IlinkClient,
+    batch: PendingWeixinBatch,
+    key: String,
+) {
+    let prompts = prompts_from_batch(&batch);
+    if prompts.is_empty() {
+        finish_weixin_active_run(
+            app,
+            client,
+            &key,
+            &batch.account_id,
+            &batch.from_user_id,
+            &batch.context_token,
+        );
+        return;
+    }
+
     let agent_session_id = match get_or_create_agent_session(
         app,
-        account_id,
-        &message.from_user_id,
-        &message.context_token,
+        &batch.account_id,
+        &batch.from_user_id,
+        &batch.context_token,
     ) {
         Ok(session_id) => session_id,
         Err(error) => {
             record_event(
                 app,
-                account_id,
+                &batch.account_id,
                 "system",
-                &message.from_user_id,
-                "创建对话失败",
+                &batch.from_user_id,
+                "创建微信对话失败",
                 "error",
                 &error,
+            );
+            finish_weixin_active_run(
+                app,
+                client,
+                &key,
+                &batch.account_id,
+                &batch.from_user_id,
+                &batch.context_token,
             );
             return;
         }
     };
+    let prompts_for_retry = prompts.clone();
 
     let typing_ticket = client
-        .get_typing_ticket(&message.from_user_id, &message.context_token)
+        .get_typing_ticket(&batch.from_user_id, &batch.context_token)
         .unwrap_or_default();
 
     if !typing_ticket.is_empty() {
-        let _ = client.send_typing(&message.from_user_id, &typing_ticket, 1);
+        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 1);
     }
 
-    let reply = match chat::invoke_channel_agent(
-        app.clone(),
-        agent_session_id,
-        message.text.clone(),
-        "微信 ClawBot",
-    ) {
+    let run = match start_weixin_channel_run(app, &key, agent_session_id.clone(), prompts) {
+        Ok(run) => run,
+        Err(error) if should_rotate_agent_session(&error) => {
+            record_event(
+                app,
+                &batch.account_id,
+                "system",
+                &batch.from_user_id,
+                "微信 Agent 会话历史异常，已切换新会话重试",
+                "retry",
+                &error,
+            );
+            match rotate_agent_session(
+                app,
+                &batch.account_id,
+                &batch.from_user_id,
+                &batch.context_token,
+            )
+            .and_then(|next_session_id| {
+                start_weixin_channel_run(app, &key, next_session_id, prompts_for_retry.clone())
+            }) {
+                Ok(run) => run,
+                Err(retry_error) => {
+                    record_event(
+                        app,
+                        &batch.account_id,
+                        "system",
+                        &batch.from_user_id,
+                        "Agent 调用失败",
+                        "error",
+                        &retry_error,
+                    );
+                    let reply_context_token = finish_weixin_active_run(
+                        app,
+                        client,
+                        &key,
+                        &batch.account_id,
+                        &batch.from_user_id,
+                        &batch.context_token,
+                    );
+                    let fallback = "当前无法生成回复，请稍后再试。".to_string();
+                    send_weixin_agent_reply(app, client, &batch, &reply_context_token, &fallback);
+                    if !typing_ticket.is_empty() {
+                        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+                    }
+                    return;
+                }
+            }
+        }
+        Err(error) => {
+            record_event(
+                app,
+                &batch.account_id,
+                "system",
+                &batch.from_user_id,
+                "Agent 调用失败",
+                "error",
+                &error,
+            );
+            let reply_context_token = finish_weixin_active_run(
+                app,
+                client,
+                &key,
+                &batch.account_id,
+                &batch.from_user_id,
+                &batch.context_token,
+            );
+            let fallback = "当前无法生成回复，请稍后再试。".to_string();
+            send_weixin_agent_reply(app, client, &batch, &reply_context_token, &fallback);
+            if !typing_ticket.is_empty() {
+                let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+            }
+            return;
+        }
+    };
+
+    let mut reply_result = run
+        .result
+        .recv()
+        .unwrap_or_else(|_| Err("Agent 结果通道已关闭。".to_string()));
+
+    if let Err(error) = &reply_result {
+        if should_rotate_agent_session(error) {
+            record_event(
+                app,
+                &batch.account_id,
+                "system",
+                &batch.from_user_id,
+                "微信 Agent 会话历史异常，已切换新会话重试",
+                "retry",
+                error,
+            );
+            reply_result = match rotate_agent_session(
+                app,
+                &batch.account_id,
+                &batch.from_user_id,
+                &batch.context_token,
+            )
+            .and_then(|next_session_id| {
+                let retry_run =
+                    start_weixin_channel_run(app, &key, next_session_id, prompts_for_retry)?;
+                retry_run
+                    .result
+                    .recv()
+                    .unwrap_or_else(|_| Err("Agent 结果通道已关闭。".to_string()))
+            }) {
+                Ok(reply) => Ok(reply),
+                Err(retry_error) => Err(retry_error),
+            };
+        }
+    }
+
+    let reply_context_token = finish_weixin_active_run(
+        app,
+        client,
+        &key,
+        &batch.account_id,
+        &batch.from_user_id,
+        &batch.context_token,
+    );
+
+    let reply = match reply_result {
         Ok(reply) => reply,
         Err(error) => {
             record_event(
                 app,
-                account_id,
+                &batch.account_id,
                 "system",
-                &message.from_user_id,
+                &batch.from_user_id,
                 "Agent 调用失败",
                 "error",
                 &error,
@@ -556,29 +995,75 @@ fn handle_incoming_text(
         }
     };
 
-    match client.send_message(&message.from_user_id, &message.context_token, &reply) {
+    send_weixin_agent_reply(app, client, &batch, &reply_context_token, &reply);
+
+    if !typing_ticket.is_empty() {
+        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+    }
+}
+
+fn finish_weixin_active_run(
+    app: &AppHandle,
+    client: &IlinkClient,
+    key: &str,
+    account_id: &str,
+    from_user_id: &str,
+    fallback_context_token: &str,
+) -> String {
+    let (reply_context_token, pending_generation) = {
+        let Ok(mut state) = MESSAGE_STATE.lock() else {
+            return fallback_context_token.to_string();
+        };
+        let reply_context_token = state
+            .active
+            .remove(key)
+            .map(|run| run.context_token)
+            .filter(|token| !token.trim().is_empty())
+            .unwrap_or_else(|| fallback_context_token.to_string());
+        let pending_generation = state.pending.get(key).map(|entry| entry.generation);
+        (reply_context_token, pending_generation)
+    };
+
+    if let Some(next_generation) = pending_generation {
+        spawn_weixin_batch_flush(
+            app.clone(),
+            account_id.to_string(),
+            from_user_id.to_string(),
+            client.clone(),
+            next_generation,
+            MESSAGE_BATCH_DELAY_MS,
+        );
+    }
+
+    reply_context_token
+}
+
+fn send_weixin_agent_reply(
+    app: &AppHandle,
+    client: &IlinkClient,
+    batch: &PendingWeixinBatch,
+    context_token: &str,
+    reply: &str,
+) {
+    match client.send_message(&batch.from_user_id, context_token, reply) {
         Ok(()) => record_event(
             app,
-            account_id,
+            &batch.account_id,
             "outbound",
-            &message.from_user_id,
-            &reply,
+            &batch.from_user_id,
+            reply,
             "sent",
             "",
         ),
         Err(error) => record_event(
             app,
-            account_id,
+            &batch.account_id,
             "outbound",
-            &message.from_user_id,
-            &reply,
+            &batch.from_user_id,
+            reply,
             "error",
             &error,
         ),
-    }
-
-    if !typing_ticket.is_empty() {
-        let _ = client.send_typing(&message.from_user_id, &typing_ticket, 2);
     }
 }
 
@@ -804,6 +1289,29 @@ fn get_or_create_agent_session(
     Ok(session_id)
 }
 
+fn rotate_agent_session(
+    app: &AppHandle,
+    account_id: &str,
+    from_user_id: &str,
+    context_token: &str,
+) -> Result<String, String> {
+    let conn = open_weixin_db(app)?;
+    let session_id = build_agent_session_id(account_id, from_user_id);
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO weixin_clawbot_sessions
+         (account_id, from_user_id, agent_session_id, last_context_token, last_message_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(account_id, from_user_id) DO UPDATE SET
+            agent_session_id=excluded.agent_session_id,
+            last_context_token=excluded.last_context_token,
+            last_message_at=excluded.last_message_at",
+        params![account_id, from_user_id, session_id, context_token, now],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(session_id)
+}
+
 fn record_event(
     app: &AppHandle,
     account_id: &str,
@@ -835,6 +1343,7 @@ fn record_event(
     );
 }
 
+#[derive(Clone)]
 struct IlinkClient {
     client: Client,
     base_url: String,
@@ -1333,11 +1842,31 @@ fn normalize_base_url(value: &str) -> String {
     }
 }
 
+fn should_rotate_agent_session(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    normalized.contains("tool_calls")
+        && (normalized.contains("must be followed")
+            || normalized.contains("insufficient tool messages")
+            || normalized.contains("tool_call_id"))
+}
+
 fn build_agent_session_id(account_id: &str, from_user_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
     account_id.hash(&mut hasher);
     from_user_id.hash(&mut hasher);
-    format!("weixin-{account_id}-{:016x}", hasher.finish())
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let counter = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "weixin-{account_id}-{:016x}-{timestamp}-{counter}",
+        hasher.finish()
+    )
+}
+
+fn weixin_message_key(account_id: &str, from_user_id: &str) -> String {
+    format!("{account_id}\n{from_user_id}")
 }
 
 fn build_event_id() -> String {

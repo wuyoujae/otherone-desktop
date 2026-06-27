@@ -31,6 +31,18 @@ export async function createWorkflowTaskInStorage(prompt: string) {
   return invoke<WorkflowTask>('create_workflow_task', { request: { prompt: taskPrompt } });
 }
 
+export async function updateWorkflowTaskInStorage(id: string, prompt: string) {
+  const taskId = id.trim();
+  const taskPrompt = prompt.trim();
+
+  if (!taskId || !taskPrompt || !isTauriRuntime()) {
+    return [];
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowTask[]>('update_workflow_task', { request: { id: taskId, prompt: taskPrompt } });
+}
+
 export async function updateWorkflowTaskStatusInStorage(id: string, status: WorkflowTaskStatus) {
   const taskId = id.trim();
 

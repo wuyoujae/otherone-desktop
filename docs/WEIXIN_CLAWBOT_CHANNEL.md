@@ -5,7 +5,7 @@
 Weixin ClawBot is implemented as a backend-owned external message channel.
 It is not installed through the existing Agent plugin registry.
 
-The first version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-sender Agent sessions, safe Agent invocation, text replies, and basic runtime diagnostics.
+The first version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-sender Agent sessions, short-window multi-message batching, mid-run prompt insertion through the interactive Agent command sender, safe Agent invocation, text replies, and basic runtime diagnostics.
 
 Reference implementation:
 
@@ -29,7 +29,7 @@ Frontend:
   - Adds the `微信 ClawBot` sidebar item after `个性化`.
   - Renders `WeixinClawbotPage`.
 - `app/frontend/src/components/WeixinClawbotPage.tsx`
-  - Status strip, QR login, start/stop controls, safety policy, recent events.
+  - Status strip, QR login, one primary next-step action, contextual reset, and a channel runtime console.
   - Renders QR codes defensively from `data:image`, SVG, base64 image, HTTP image converted by backend, or plain QR payload.
 - `app/frontend/src/services/weixinClawbotService.ts`
   - Tauri command wrappers.
@@ -49,10 +49,12 @@ Backend:
   - Converts HTTP/SVG QR image content into frontend-safe image data URLs when possible.
   - Long-poll runtime.
   - Inbound text parsing.
-  - Agent session mapping.
+  - Per-sender 3-second text batching before Agent invocation.
+  - Active Agent command sender tracking for mid-run Weixin prompt insertion.
+  - Agent session mapping with stale-history rotation when old localfile history has invalid tool-call ordering.
   - `getconfig`, `sendtyping`, and text `sendmessage`.
 - `app/frontend/src-tauri/src/chat.rs`
-  - Adds `invoke_channel_agent` for non-UI channel calls.
+  - Adds `start_channel_agent_run` and `enqueue_channel_agent_prompts` for non-UI external channel multi-prompt calls.
 - `app/frontend/src-tauri/src/tools.rs`
   - Adds `build_weixin_safe_tools`.
 - `app/frontend/src-tauri/src/main.rs`
@@ -65,6 +67,7 @@ Backend:
 - `weixin_clawbot_check_login`
 - `weixin_clawbot_start`
 - `weixin_clawbot_stop`
+- `weixin_clawbot_reset`
 - `weixin_clawbot_list_events`
 
 ## Runtime Flow
@@ -74,12 +77,18 @@ Backend:
 3. Backend requests the QR from iLink and returns display-safe QR content.
 4. User scans and confirms in Weixin.
 5. Backend stores token/base URL and can start long polling.
-6. Inbound text message arrives from `getupdates`.
-7. Backend maps the sender to an `otherone-agent` session.
-8. Backend requests typing config and sends typing status `1`.
-9. Backend invokes the Agent through `invoke_channel_agent`.
-10. Backend sends the final assistant text with the current inbound `context_token`.
-11. Backend sends typing status `2` and records an event.
+6. Inbound text messages arrive from `getupdates`.
+7. Backend records each inbound message and queues it by `(account_id, from_user_id)`.
+8. The sender queue waits for a 3-second quiet window; new text from the same sender refreshes the window.
+9. Backend maps the sender to an `otherone-agent` session.
+10. Backend requests typing config and sends typing status `1`.
+11. Backend starts an interactive Weixin-safe Agent run through `start_channel_agent_run`.
+12. For multi-message batches, each Weixin text is written as its own `user` entry before Agent invocation.
+13. If an old mapped Agent session fails because its localfile history contains unmatched `tool_calls`, backend rotates that sender to a fresh session id and retries once.
+14. If more text from the same sender arrives while the Agent is still active, the backend sends `AgentStreamCommand::EnqueueUserPrompts` through the active command sender.
+15. The framework persists queued prompts at safe provider-ordering boundaries and emits `queued_user_prompts`.
+16. Backend sends one final assistant text with the latest inbound `context_token`.
+17. Backend sends typing status `2` and records an event.
 
 ## QR Payload Rules
 
@@ -180,9 +189,16 @@ Not allowed by default:
 - [x] Add text inbound parsing and current `context_token` capture.
 - [x] Add per-sender Agent session mapping.
 - [x] Add Weixin-safe Agent invocation helper.
+- [x] Add per-sender 3-second text batching for rapid Weixin messages.
+- [x] Send multi-message Weixin batches as separate Agent user prompts.
+- [x] Insert mid-run Weixin messages into the active Agent run.
 - [x] Add sendtyping before/after Agent runs.
 - [x] Add text sendmessage with SDK-compatible fields.
 - [x] Add basic runtime events for UI diagnostics.
+- [x] Add reset flow for clearing token, polling cursor, pending queue, and sender session mapping before reconnecting.
+- [x] Refresh the Weixin page layout and remove the recent-message and safety-boundary cards.
+- [x] Simplify the Weixin page into one primary next-step action plus contextual reset.
+- [x] Rotate stale Agent sessions when old localfile history has invalid tool-call ordering.
 - [x] Verify frontend build and Rust check.
 
 ## Later TODO

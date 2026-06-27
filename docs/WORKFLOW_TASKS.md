@@ -3,7 +3,8 @@
 ## Scope
 - Workflow tasks are created from the task prompt box.
 - Creation now runs through the configured default AI model before persistence.
-- Execution scheduling, reminders, and parameter presets are intentionally out of scope.
+- Execution scheduling and parameter presets are intentionally out of scope.
+- Desktop system reminders are supported for concrete task start times.
 
 ## Storage
 - SQLite database: `{dataRoot}/otherone.sqlite`
@@ -29,6 +30,8 @@
 | `repeat_end_date` | `TEXT` | Optional parent repeat end date, retained on generated instances for traceability. |
 | `metadata_json` | `TEXT NOT NULL DEFAULT '{}'` | AI-extracted metadata such as priority, summary, tags, original prompt, plus mirrored time fields. |
 | `model_response` | `TEXT NOT NULL DEFAULT ''` | Raw model response used to create the task. |
+| `reminder_notified_at` | `TEXT` | UTC RFC3339 timestamp for the last successful desktop reminder. |
+| `reminder_target_at` | `TEXT` | Start datetime that was already reminded. If the task start time changes, it can be reminded again. |
 | `status` | `TEXT NOT NULL DEFAULT 'pending'` | Task lifecycle state. Supported values are `pending` and `completed`. |
 | `created_at` | `TEXT NOT NULL` | UTC RFC3339 timestamp from backend creation. |
 | `updated_at` | `TEXT NOT NULL` | UTC RFC3339 timestamp from backend creation. |
@@ -81,6 +84,20 @@
 - `delete_workflow_task({ request: { id } })`
   - Deletes one concrete task instance from `workflow_tasks`.
   - Does not delete the parent `workflow_task_series` or sibling generated instances.
+- `update_workflow_task({ request: { id, prompt } })`
+  - Reads the selected concrete task and sends it with the natural-language edit instruction to the configured workflow model.
+  - Requires a JSON object with a `tasks` array.
+  - When one task is returned, updates the selected row in place and preserves its status.
+  - When multiple tasks are returned, deletes the selected row, creates a new `workflow_task_series`, and inserts one concrete row per returned task.
+  - Supports edits that turn a simple task into a recurring set, such as changing `tomorrow 09:00 class` into `every Monday 09:00-18:00 class`.
+
+## Desktop Reminders
+- The Tauri backend starts a workflow reminder loop during app setup.
+- Every 30 seconds it scans pending tasks with `start_at` or legacy `scheduled_at`.
+- If the task starts within the next three minutes, the backend sends a desktop system notification.
+- Completed tasks and tasks without concrete start times are skipped.
+- The backend writes `reminder_target_at` after sending, so the same task/start-time pair only reminds once.
+- If an edited task gets a new start time, it becomes eligible for a new reminder.
 
 ## Frontend
 - `TaskView` loads the selected header date through `loadWorkflowTasksForRangeFromStorage(selectedDate, selectedDate)`.
@@ -92,7 +109,7 @@
 - Task editing mode displays title, scheduled time, priority, and markdown content as the primary task surface.
 - Secondary fields, including updated time, summary, tags, and original prompt, are grouped into a default-collapsed "更多信息" panel.
 - The task status pill and sidebar checkbox toggle `pending`/`completed`; completed sidebar items dim with a CSS transition.
-- Natural-language task modification is frontend-only for now; it does not call an AI update command yet.
+- Natural-language task modification calls `update_workflow_task` and refreshes the selected-date task list after persistence.
 - Task list time omits the date because the workflow header already shows the selected date.
 - Task list time uses different icons for inferred time kinds: point time, time range, repeated point time, and repeated time range.
 - Time-kind inference uses `startAt`, `endAt`, repeat dates, `scheduledAt`, `timeText`, metadata, and the raw prompt.

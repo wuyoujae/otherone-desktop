@@ -61,6 +61,12 @@ export async function stopWeixinClawbot(): Promise<WeixinClawbotStatus> {
   return invoke<WeixinClawbotStatus>('weixin_clawbot_stop');
 }
 
+export async function resetWeixinClawbot(): Promise<WeixinClawbotStatus> {
+  if (!isTauriRuntime()) return defaultStatus;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WeixinClawbotStatus>('weixin_clawbot_reset');
+}
+
 export async function loadWeixinClawbotEvents(): Promise<WeixinClawbotEvent[]> {
   if (!isTauriRuntime()) return [];
   const { invoke } = await import('@tauri-apps/api/core');

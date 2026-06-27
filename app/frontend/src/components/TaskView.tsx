@@ -23,6 +23,7 @@ import {
   createWorkflowTaskInStorage,
   deleteWorkflowTaskInStorage,
   loadWorkflowTasksForRangeFromStorage,
+  updateWorkflowTaskInStorage,
   updateWorkflowTaskStatusInStorage,
 } from '../services/workflowStorage';
 import type { WorkflowTask, WorkflowTaskStatus } from '../types/workflow';
@@ -394,6 +395,38 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     }
   }, [isCreatingTask, onNotice, prompt, selectedDateKey]);
 
+  const updateTask = useCallback(async () => {
+    const taskPrompt = prompt.trim();
+
+    if (!activeTask || !taskPrompt || isCreatingTask) {
+      return;
+    }
+
+    setIsCreatingTask(true);
+
+    try {
+      const updatedTasks = await updateWorkflowTaskInStorage(activeTask.id, taskPrompt);
+
+      if (updatedTasks.length === 0) {
+        onNotice?.('warn', '无法修改任务', '当前环境无法保存任务修改，请在桌面应用中使用。');
+        return;
+      }
+
+      const refreshedTasks = await loadWorkflowTasksForRangeFromStorage(selectedDateKey, selectedDateKey);
+      const nextActiveTask = updatedTasks.find((task) => refreshedTasks.some((item) => item.id === task.id));
+
+      setTasks(refreshedTasks);
+      setActiveTaskId(nextActiveTask?.id ?? null);
+      setPrompt('');
+      setMoreInfoOpen(false);
+      onNotice?.('success', '任务已修改', nextActiveTask?.title ?? updatedTasks[0]?.title);
+    } catch (error) {
+      onNotice?.('fail', '修改任务失败', errorToMessage(error));
+    } finally {
+      setIsCreatingTask(false);
+    }
+  }, [activeTask, isCreatingTask, onNotice, prompt, selectedDateKey]);
+
   const submitTaskPrompt = useCallback(async () => {
     const taskPrompt = prompt.trim();
 
@@ -402,12 +435,12 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     }
 
     if (isEditingTask) {
-      onNotice?.('info', '任务修改暂未接入', '当前只展示编辑入口，下一步再接入 AI 修改任务。');
+      await updateTask();
       return;
     }
 
     await createTask();
-  }, [createTask, isCreatingTask, isEditingTask, onNotice, prompt]);
+  }, [createTask, isCreatingTask, isEditingTask, prompt, updateTask]);
 
   const sendDisabled = prompt.trim().length === 0 || isCreatingTask;
   const activeTaskStatus = activeTask ? statusMeta[activeTask.status] ?? statusMeta.pending : null;

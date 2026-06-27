@@ -1,7 +1,8 @@
 use crate::tools;
 use otherone::agent::types::{AiOptions, ContextLoadType, InputOptions, StorageType};
-use otherone::agent::StreamAgentEvent;
+use otherone::agent::{AgentStreamCommand, StreamAgentEvent};
 use otherone::ai::types::{ProviderType, ToolChoice};
+use otherone::storage::types::{StorageType as EntryStorageType, WriteEntryOptions};
 use otherone::Otherone;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -15,6 +16,10 @@ use tauri::{AppHandle, Emitter};
 /// 前端调用 cancel_chat_message 时触发对应 session 的取消信号
 static CANCEL_TOKENS: LazyLock<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_CHAT_COMMANDS: LazyLock<
+    Mutex<HashMap<String, tokio::sync::mpsc::Sender<AgentStreamCommand>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+const DESKTOP_LONG_TERM_MEMORY_RECALL_MAX_TYPES: usize = 5;
 
 // ---------------------------------------------------------------------------
 // 基础 System Prompt（内置，用户不可修改）
@@ -54,16 +59,73 @@ pub struct SendChatMessageRequest {
     pub session_id: Option<String>,
     pub model_id: String,
     pub prompt: String,
+    pub prompts: Option<Vec<String>>,
     pub reasoning_effort: Option<String>,
     pub context_compression_enabled: bool,
     pub branch_mode_enabled: bool,
     pub target_mode_enabled: bool,
+    #[serde(default = "default_memory_enabled")]
+    pub memory_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendChatMessageResponse {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueChatMessageRequest {
+    pub session_id: String,
+    pub prompt: String,
+    pub prompts: Option<Vec<String>>,
+}
+
+fn normalized_request_prompts(request: &SendChatMessageRequest) -> Vec<String> {
+    request
+        .prompts
+        .as_ref()
+        .map(|prompts| {
+            prompts
+                .iter()
+                .map(|prompt| prompt.trim())
+                .filter(|prompt| !prompt.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|prompts| !prompts.is_empty())
+        .unwrap_or_else(|| {
+            let prompt = request.prompt.trim();
+            if prompt.is_empty() {
+                Vec::new()
+            } else {
+                vec![prompt.to_string()]
+            }
+        })
+}
+
+fn normalized_enqueue_prompts(request: &EnqueueChatMessageRequest) -> Vec<String> {
+    request
+        .prompts
+        .as_ref()
+        .map(|prompts| {
+            prompts
+                .iter()
+                .map(|prompt| prompt.trim())
+                .filter(|prompt| !prompt.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|prompts| !prompts.is_empty())
+        .unwrap_or_else(|| {
+            let prompt = request.prompt.trim();
+            if prompt.is_empty() {
+                Vec::new()
+            } else {
+                vec![prompt.to_string()]
+            }
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +197,13 @@ struct DeltaSegment {
     content: String,
 }
 
+pub type ChannelAgentCommandSender = tokio::sync::mpsc::Sender<AgentStreamCommand>;
+
+pub struct ChannelAgentRun {
+    pub commands: ChannelAgentCommandSender,
+    pub result: std::sync::mpsc::Receiver<Result<String, String>>,
+}
+
 struct ActiveChatGuard;
 
 impl Drop for ActiveChatGuard {
@@ -166,6 +235,73 @@ pub fn cancel_chat_message(session_id: String) -> Result<(), String> {
         eprintln!("[chat_stream] session={} 取消信号已发送", sid);
     }
 
+    let _ = ACTIVE_CHAT_COMMANDS
+        .lock()
+        .map(|mut commands| commands.remove(&sid));
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn enqueue_chat_message(request: EnqueueChatMessageRequest) -> Result<(), String> {
+    let session_id = require_text(&request.session_id, "session_id")?.to_string();
+    let prompts = normalized_enqueue_prompts(&request);
+    if prompts.is_empty() {
+        return Err("消息内容不能为空。".to_string());
+    }
+
+    let sender = ACTIVE_CHAT_COMMANDS
+        .lock()
+        .map_err(|_| "无法获取运行中对话队列锁。".to_string())?
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "当前会话没有正在运行的 Agent。".to_string())?;
+
+    tauri::async_runtime::block_on(async move {
+        sender
+            .send(AgentStreamCommand::EnqueueUserPrompts(prompts))
+            .await
+            .map_err(|_| "运行中对话队列已关闭。".to_string())
+    })
+}
+
+pub fn enqueue_channel_agent_prompts(
+    sender: &ChannelAgentCommandSender,
+    prompts: Vec<String>,
+) -> Result<(), String> {
+    let prompts = prompts
+        .into_iter()
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty())
+        .collect::<Vec<_>>();
+    if prompts.is_empty() {
+        return Err("外部消息不能为空。".to_string());
+    }
+
+    let sender = sender.clone();
+    tauri::async_runtime::block_on(async move {
+        sender
+            .send(AgentStreamCommand::EnqueueUserPrompts(prompts))
+            .await
+            .map_err(|_| "运行中的外部 Agent 队列已关闭。".to_string())
+    })
+}
+
+fn write_user_prompt_entries_blocking(session_id: &str, prompts: &[String]) -> Result<(), String> {
+    for prompt in prompts {
+        tauri::async_runtime::block_on(otherone::storage::write_entry(&WriteEntryOptions {
+            storage_type: EntryStorageType::LocalFile,
+            session_id: session_id.to_string(),
+            role: "user".to_string(),
+            content: resolve_prompt(prompt),
+            tools: None,
+            token_consumption: None,
+            create_at: None,
+            database_config: None,
+        }))
+        .map_err(|error| error.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -174,8 +310,8 @@ pub fn send_chat_message(
     app: AppHandle,
     request: SendChatMessageRequest,
 ) -> Result<SendChatMessageResponse, String> {
-    let prompt = request.prompt.trim().to_string();
-    if prompt.is_empty() {
+    let prompts = normalized_request_prompts(&request);
+    if prompts.is_empty() {
         return Err("消息内容不能为空。".to_string());
     }
 
@@ -202,7 +338,7 @@ pub fn send_chat_message(
             app.clone(),
             request,
             event_session_id.clone(),
-            prompt,
+            prompts,
             provider,
             model,
             settings,
@@ -224,12 +360,13 @@ fn run_chat_stream(
     app: AppHandle,
     request: SendChatMessageRequest,
     session_id: String,
-    prompt: String,
+    prompts: Vec<String>,
     provider: ProviderConfig,
     model: ModelConfig,
     settings: app_settings::AppSettings,
     dialogue_root: std::path::PathBuf,
 ) -> Result<(), String> {
+    let prewrite_user_prompts = prompts.len() > 1;
     // 仅在初始化 localfile 根目录时持锁，流式对话期间释放
     // 确保多个 session 可以并发执行互不阻塞
     {
@@ -239,35 +376,61 @@ fn run_chat_stream(
 
         std::fs::create_dir_all(&dialogue_root).map_err(|error| error.to_string())?;
         Otherone::set_localfile_root(&dialogue_root);
+        otherone::memory::set_memory_storage_root(&dialogue_root);
+        if prewrite_user_prompts {
+            write_user_prompt_entries_blocking(&session_id, &prompts)?;
+        }
     }
 
     eprintln!("[chat_stream] session={} 开始流式对话", session_id);
 
     tauri::async_runtime::block_on(async {
-        emit_event(
-            &app,
-            ChatStreamEvent::plain(session_id.clone(), "user_entry", prompt.clone(), None, None),
-        );
+        for prompt in &prompts {
+            emit_event(
+                &app,
+                ChatStreamEvent::plain(
+                    session_id.clone(),
+                    "user_entry",
+                    prompt.clone(),
+                    None,
+                    None,
+                ),
+            );
+        }
 
         let input = build_input_options(
             &session_id,
             &model,
             &settings.engine,
             request.context_compression_enabled,
+            request.memory_enabled,
         );
+        let prompt_for_agent = if prewrite_user_prompts {
+            None
+        } else {
+            prompts.first().map(String::as_str)
+        };
         let ai = build_ai_options(
             &app,
             &session_id,
             &provider,
             &model,
             &settings.engine,
-            &prompt,
+            prompt_for_agent,
             request.reasoning_effort,
             AgentToolScope::FullDesktop,
         )?;
-        let mut stream = Otherone::invoke_agent_stream(input, ai)
+        let handle = Otherone::invoke_agent_stream_interactive(input, ai, None)
             .await
             .map_err(|error| error.to_string())?;
+        let mut stream = handle.events;
+
+        {
+            let mut commands = ACTIVE_CHAT_COMMANDS
+                .lock()
+                .map_err(|_| "无法获取运行中对话队列锁。".to_string())?;
+            commands.insert(session_id.clone(), handle.commands);
+        }
 
         eprintln!(
             "[chat_stream] session={} Agent stream 已创建,开始接收事件",
@@ -312,6 +475,12 @@ fn run_chat_stream(
                 .map(|mut tokens| tokens.remove(&session_id));
         }
 
+        {
+            let _ = ACTIVE_CHAT_COMMANDS
+                .lock()
+                .map(|mut commands| commands.remove(&session_id));
+        }
+
         if cancelled {
             eprintln!(
                 "[chat_stream] session={} 已被用户取消,共收到 {} 个事件",
@@ -333,21 +502,38 @@ fn run_chat_stream(
 }
 
 /// 处理单个流式事件，提取为 extract function 以支持 tokio::select! 分支
-pub fn invoke_channel_agent(
+pub fn start_channel_agent_run(
     app: AppHandle,
     session_id: String,
-    prompt: String,
+    prompts: Vec<String>,
     source_name: &str,
-) -> Result<String, String> {
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
+) -> Result<ChannelAgentRun, String> {
+    let prompts = prompts
+        .into_iter()
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty())
+        .collect::<Vec<_>>();
+    if prompts.is_empty() {
         return Err("外部消息不能为空。".to_string());
     }
 
     let providers = storage::load_api_configs(app.clone())?;
     let (provider, model) = select_default_agent_model(&providers)?;
-    let settings = app_settings::load_settings(&app)?;
+    let mut settings = app_settings::load_settings(&app)?;
     let dialogue_root = session::agent_storage_root(&app)?;
+    let prewrite_user_prompts = prompts.len() > 1;
+    let channel_system_prompt = format!(
+        "The current user is talking through {source_name}. Return only the plain text that can be sent back to that external user. Do not include internal tool logs, hidden reasoning, channel metadata, or desktop-only instructions in the reply."
+    );
+    settings.engine.system_prompt = if settings.engine.system_prompt.trim().is_empty() {
+        channel_system_prompt
+    } else {
+        format!(
+            "{}\n\n{}",
+            settings.engine.system_prompt.trim(),
+            channel_system_prompt
+        )
+    };
 
     {
         let _lock = session::LOCALFILE_STORAGE_LOCK
@@ -356,29 +542,52 @@ pub fn invoke_channel_agent(
 
         std::fs::create_dir_all(&dialogue_root).map_err(|error| error.to_string())?;
         Otherone::set_localfile_root(&dialogue_root);
+        if prewrite_user_prompts {
+            write_user_prompt_entries_blocking(&session_id, &prompts)?;
+        }
     }
 
-    let channel_prompt = format!(
-        "这是一条来自{source_name}的外部用户消息。请只返回适合直接发送给该用户的回复文本，不要包含内部工具日志。\n\n用户消息：\n{prompt}"
-    );
     let reasoning_effort = Some(settings.engine.default_reasoning_effort.clone());
 
-    tauri::async_runtime::block_on(async {
-        let input = build_input_options(&session_id, &model, &settings.engine, true);
+    let (commands, stream) = tauri::async_runtime::block_on(async {
+        let input = build_input_options(&session_id, &model, &settings.engine, true, false);
+        let prompt_for_agent = if prewrite_user_prompts {
+            None
+        } else {
+            prompts.first().map(String::as_str)
+        };
         let ai = build_ai_options(
             &app,
             &session_id,
             &provider,
             &model,
             &settings.engine,
-            &channel_prompt,
+            prompt_for_agent,
             reasoning_effort,
             AgentToolScope::WeixinSafe,
         )?;
-        let mut stream = Otherone::invoke_agent_stream(input, ai)
+        let handle = Otherone::invoke_agent_stream_interactive(input, ai, None)
             .await
             .map_err(|error| error.to_string())?;
+        Ok::<_, String>((handle.commands, handle.events))
+    })?;
 
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = collect_channel_agent_result(stream);
+        let _ = result_tx.send(result);
+    });
+
+    Ok(ChannelAgentRun {
+        commands,
+        result: result_rx,
+    })
+}
+
+fn collect_channel_agent_result(
+    mut stream: tokio::sync::mpsc::Receiver<StreamAgentEvent>,
+) -> Result<String, String> {
+    tauri::async_runtime::block_on(async move {
         let mut response = String::new();
         let mut fallback_complete = String::new();
 
@@ -389,6 +598,12 @@ pub fn invoke_channel_agent(
                 .filter(|value| !value.trim().is_empty())
             {
                 return Err(error.clone());
+            }
+
+            if event.event_type == "queued_user_prompts" {
+                response.clear();
+                fallback_complete.clear();
+                continue;
             }
 
             if event.event_type == "chunk" {
@@ -630,6 +845,7 @@ fn build_input_options(
     model: &ModelConfig,
     engine: &app_settings::EngineSettings,
     context_compression_enabled: bool,
+    enable_long_term_memory: bool,
 ) -> InputOptions {
     let context_window = if model.context_window > 0 {
         model.context_window as u32
@@ -649,7 +865,14 @@ fn build_input_options(
             1.1
         }),
         max_iterations: Some(engine.max_iterations),
+        enable_long_term_memory: Some(enable_long_term_memory),
+        long_term_memory_recall_max_types: enable_long_term_memory
+            .then_some(DESKTOP_LONG_TERM_MEMORY_RECALL_MAX_TYPES),
     }
+}
+
+fn default_memory_enabled() -> bool {
+    true
 }
 
 fn resolve_user_root() -> String {
@@ -723,7 +946,7 @@ fn build_ai_options(
     provider: &ProviderConfig,
     model: &ModelConfig,
     engine: &app_settings::EngineSettings,
-    prompt: &str,
+    prompt: Option<&str>,
     reasoning_effort: Option<String>,
     tool_scope: AgentToolScope,
 ) -> Result<AiOptions, String> {
@@ -750,14 +973,14 @@ fn build_ai_options(
     };
 
     // 对 user prompt 也做变量替换
-    let resolved_user_prompt = resolve_prompt(prompt);
+    let resolved_user_prompt = prompt.map(resolve_prompt);
 
     Ok(AiOptions {
         provider: provider_type,
         api_key,
         base_url,
         model: require_text(&model.name, "模型名称")?.to_string(),
-        user_prompt: Some(resolved_user_prompt),
+        user_prompt: resolved_user_prompt,
         system_prompt,
         messages: None,
         context_length,
