@@ -17,6 +17,11 @@ app/frontend/tauri-dev.*.log
 # Verification output
 app/frontend/verification/
 
+# Large resource bundles
+resources/propertypes/
+resources/skills/
+resources/tools/
+
 # IDE
 .vscode/
 .idea/
