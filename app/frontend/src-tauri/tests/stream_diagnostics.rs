@@ -182,13 +182,22 @@ fn test_full_stream_with_openai_chunks() {
             // 这就是 chat.rs 的处理逻辑
             if let Some(segment) = extract_delta_segment(event.raw_chunk.as_ref()) {
                 emitted_events.push((segment.event_type.to_string(), segment.content.clone()));
-                eprintln!("  chunk#{} → emit({}, \"{}\")", chunk_count, segment.event_type, segment.content);
+                eprintln!(
+                    "  chunk#{} → emit({}, \"{}\")",
+                    chunk_count, segment.event_type, segment.content
+                );
             } else if !event.content.is_empty() {
                 emitted_events.push(("assistant_delta".to_string(), event.content.clone()));
-                eprintln!("  chunk#{} → emit(fallback, \"{}\")", chunk_count, event.content);
+                eprintln!(
+                    "  chunk#{} → emit(fallback, \"{}\")",
+                    chunk_count, event.content
+                );
             } else {
-                eprintln!("  ⚠️ chunk#{} → 静默丢失! raw_chunk={:?}, content=空",
-                    chunk_count, event.raw_chunk.is_some());
+                eprintln!(
+                    "  ⚠️ chunk#{} → 静默丢失! raw_chunk={:?}, content=空",
+                    chunk_count,
+                    event.raw_chunk.is_some()
+                );
             }
         } else {
             let mapped = map_event_type(&event.event_type);
@@ -198,7 +207,11 @@ fn test_full_stream_with_openai_chunks() {
     }
 
     assert_eq!(chunk_count, 3, "应该处理3个 chunk");
-    assert_eq!(emitted_events.len(), 4, "应该 emit 4 个事件 (3 delta + 1 complete)");
+    assert_eq!(
+        emitted_events.len(),
+        4,
+        "应该 emit 4 个事件 (3 delta + 1 complete)"
+    );
     assert_eq!(emitted_events[0].0, "assistant_delta");
     assert_eq!(emitted_events[0].1, "你好");
     assert_eq!(emitted_events[1].1, "，世界");

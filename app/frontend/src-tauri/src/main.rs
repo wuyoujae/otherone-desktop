@@ -1,11 +1,15 @@
 mod ai_test;
 mod app_settings;
+mod artifacts;
 mod chat;
+mod native_dialog;
 mod plugin_registry;
 mod plugins;
 mod session;
 mod storage;
 mod tools;
+mod weixin_clawbot;
+mod workflow;
 
 fn main() {
     tauri::Builder::default()
@@ -17,9 +21,24 @@ fn main() {
             app_settings::migrate_storage_settings,
             chat::send_chat_message,
             chat::cancel_chat_message,
+            native_dialog::open_directory,
+            native_dialog::reveal_file,
+            native_dialog::select_directory,
+            artifacts::list_file_artifacts,
             plugins::load_plugin_list,
             plugins::install_plugin,
             plugins::uninstall_plugin,
+            workflow::create_workflow_task,
+            workflow::delete_workflow_task,
+            workflow::list_workflow_tasks,
+            workflow::list_workflow_tasks_for_range,
+            workflow::update_workflow_task_status,
+            weixin_clawbot::weixin_clawbot_status,
+            weixin_clawbot::weixin_clawbot_begin_login,
+            weixin_clawbot::weixin_clawbot_check_login,
+            weixin_clawbot::weixin_clawbot_start,
+            weixin_clawbot::weixin_clawbot_stop,
+            weixin_clawbot::weixin_clawbot_list_events,
             storage::load_api_configs,
             storage::save_api_configs,
             session::load_sessions,
@@ -27,9 +46,11 @@ fn main() {
             session::update_session_title
         ])
         .setup(|app| {
-            // 初始化插件数据库表
             if let Ok(db) = crate::storage::open_database(&app.handle()) {
                 let _ = crate::plugins::init_plugin_db(&db);
+                let _ = crate::artifacts::init_artifact_database(&db);
+                let _ = crate::workflow::init_workflow_database(&db);
+                let _ = crate::weixin_clawbot::init_weixin_clawbot_database(&db);
             }
             Ok(())
         })

@@ -300,7 +300,10 @@ fn parse_tool_display(entry: &Entry) -> (Option<String>, Option<String>) {
         .unwrap_or("unknown");
 
     let result = tools_value.get("result");
-    let error = tools_value.get("error").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let error = tools_value
+        .get("error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
     match function_name {
         "read_file" => {
@@ -328,9 +331,15 @@ fn parse_tool_display(entry: &Entry) -> (Option<String>, Option<String>) {
 
 /// 从工具 result JSON 中提取文件路径
 fn extract_file_path(result: Option<&Value>) -> String {
-    let Some(res) = result else { return String::new() };
+    let Some(res) = result else {
+        return String::new();
+    };
     // read_file 输出：result.file.file_path 或 result.filePath
-    if let Some(p) = res.get("file").and_then(|f| f.get("file_path")).and_then(|v| v.as_str()) {
+    if let Some(p) = res
+        .get("file")
+        .and_then(|f| f.get("file_path"))
+        .and_then(|v| v.as_str())
+    {
         return p.to_string();
     }
     if let Some(p) = res.get("file_path").and_then(|v| v.as_str()) {

@@ -1,10 +1,10 @@
 use crate::tools;
 use otherone::agent::types::{AiOptions, ContextLoadType, InputOptions, StorageType};
+use otherone::agent::StreamAgentEvent;
 use otherone::ai::types::{ProviderType, ToolChoice};
 use otherone::Otherone;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use otherone::agent::StreamAgentEvent;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -32,6 +32,8 @@ You have access to tools. When a task requires reading a file or writing one, us
 them — do not guess from memory when you can read the real thing. Work inside
 ${USERTOORPATH} by default unless the user specifies another directory.
 
+${AVAILABLE_SKILLS}
+
 Be concise. Be direct. Be helpful. Speak the user's language."#;
 
 use crate::app_settings;
@@ -39,6 +41,12 @@ use crate::session;
 use crate::storage::{self, ModelConfig, ProviderConfig};
 
 static ACTIVE_CHATS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, Copy)]
+enum AgentToolScope {
+    FullDesktop,
+    WeixinSafe,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,7 +83,7 @@ pub struct ChatStreamEvent {
     /// 可展开时的详情内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_detail: Option<String>,
-    /// 工具执行状态: "completed" | "error"
+    /// 工具执行状态: "running" | "completed" | "error"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_status: Option<String>,
 }
@@ -204,13 +212,7 @@ pub fn send_chat_message(
         if let Err(error) = result {
             emit_event(
                 &app,
-                ChatStreamEvent::plain(
-                    event_session_id,
-                    "error",
-                    String::new(),
-                    None,
-                    Some(error),
-                ),
+                ChatStreamEvent::plain(event_session_id, "error", String::new(), None, Some(error)),
             );
         }
     });
@@ -244,13 +246,7 @@ fn run_chat_stream(
     tauri::async_runtime::block_on(async {
         emit_event(
             &app,
-            ChatStreamEvent::plain(
-                session_id.clone(),
-                "user_entry",
-                prompt.clone(),
-                None,
-                None,
-            ),
+            ChatStreamEvent::plain(session_id.clone(), "user_entry", prompt.clone(), None, None),
         );
 
         let input = build_input_options(
@@ -260,17 +256,23 @@ fn run_chat_stream(
             request.context_compression_enabled,
         );
         let ai = build_ai_options(
+            &app,
+            &session_id,
             &provider,
             &model,
             &settings.engine,
             &prompt,
             request.reasoning_effort,
+            AgentToolScope::FullDesktop,
         )?;
         let mut stream = Otherone::invoke_agent_stream(input, ai)
             .await
             .map_err(|error| error.to_string())?;
 
-        eprintln!("[chat_stream] session={} Agent stream 已创建,开始接收事件", session_id);
+        eprintln!(
+            "[chat_stream] session={} Agent stream 已创建,开始接收事件",
+            session_id
+        );
 
         // 注册取消令牌
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
@@ -297,12 +299,7 @@ fn run_chat_stream(
             match event {
                 Some(event) => {
                     event_count += 1;
-                    process_stream_event(
-                        &app,
-                        &session_id,
-                        event,
-                        &mut pending_raw_thinking,
-                    );
+                    process_stream_event(&app, &session_id, event, &mut pending_raw_thinking);
                 }
                 None => break,
             }
@@ -322,13 +319,7 @@ fn run_chat_stream(
             );
             emit_event(
                 &app,
-                ChatStreamEvent::plain(
-                    session_id.clone(),
-                    "cancelled",
-                    String::new(),
-                    None,
-                    None,
-                ),
+                ChatStreamEvent::plain(session_id.clone(), "cancelled", String::new(), None, None),
             );
         } else {
             eprintln!(
@@ -342,6 +333,99 @@ fn run_chat_stream(
 }
 
 /// 处理单个流式事件，提取为 extract function 以支持 tokio::select! 分支
+pub fn invoke_channel_agent(
+    app: AppHandle,
+    session_id: String,
+    prompt: String,
+    source_name: &str,
+) -> Result<String, String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("外部消息不能为空。".to_string());
+    }
+
+    let providers = storage::load_api_configs(app.clone())?;
+    let (provider, model) = select_default_agent_model(&providers)?;
+    let settings = app_settings::load_settings(&app)?;
+    let dialogue_root = session::agent_storage_root(&app)?;
+
+    {
+        let _lock = session::LOCALFILE_STORAGE_LOCK
+            .lock()
+            .map_err(|_| "无法锁定对话存储。".to_string())?;
+
+        std::fs::create_dir_all(&dialogue_root).map_err(|error| error.to_string())?;
+        Otherone::set_localfile_root(&dialogue_root);
+    }
+
+    let channel_prompt = format!(
+        "这是一条来自{source_name}的外部用户消息。请只返回适合直接发送给该用户的回复文本，不要包含内部工具日志。\n\n用户消息：\n{prompt}"
+    );
+    let reasoning_effort = Some(settings.engine.default_reasoning_effort.clone());
+
+    tauri::async_runtime::block_on(async {
+        let input = build_input_options(&session_id, &model, &settings.engine, true);
+        let ai = build_ai_options(
+            &app,
+            &session_id,
+            &provider,
+            &model,
+            &settings.engine,
+            &channel_prompt,
+            reasoning_effort,
+            AgentToolScope::WeixinSafe,
+        )?;
+        let mut stream = Otherone::invoke_agent_stream(input, ai)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let mut response = String::new();
+        let mut fallback_complete = String::new();
+
+        while let Some(event) = stream.recv().await {
+            if let Some(error) = event
+                .error
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                return Err(error.clone());
+            }
+
+            if event.event_type == "chunk" {
+                if let Some(segment) = extract_delta_segment(event.raw_chunk.as_ref()) {
+                    if segment.event_type == "assistant_delta" {
+                        response.push_str(&segment.content);
+                    }
+                } else if !event.content.is_empty() {
+                    response.push_str(&event.content);
+                }
+                continue;
+            }
+
+            if event.event_type == "complete" {
+                fallback_complete = event.content;
+                continue;
+            }
+
+            if map_event_type(&event.event_type) == "assistant_delta" && !event.content.is_empty() {
+                response.push_str(&event.content);
+            }
+        }
+
+        let answer = if response.trim().is_empty() {
+            fallback_complete.trim().to_string()
+        } else {
+            response.trim().to_string()
+        };
+
+        if answer.is_empty() {
+            Err("Agent 没有返回可发送内容。".to_string())
+        } else {
+            Ok(answer)
+        }
+    })
+}
+
 fn process_stream_event(
     app: &AppHandle,
     session_id: &str,
@@ -456,13 +540,7 @@ fn emit_tool_call_events(app: &AppHandle, session_id: &str, content: &str) {
 
         emit_event(
             app,
-            ChatStreamEvent::tool(
-                session_id.to_string(),
-                label,
-                expandable,
-                detail,
-                "completed",
-            ),
+            ChatStreamEvent::tool(session_id.to_string(), label, expandable, detail, "running"),
         );
     }
 }
@@ -626,6 +704,10 @@ fn resolve_prompt(raw: &str) -> String {
     vars.insert("USERTOORPATH", resolve_user_root());
     vars.insert("SYSTEM_INFO", resolve_system_info());
     vars.insert("CURRENT_TIME", resolve_current_time());
+    vars.insert(
+        "AVAILABLE_SKILLS",
+        crate::plugins::format_skills_for_prompt(),
+    );
 
     let mut result = raw.to_owned();
     for (key, value) in &vars {
@@ -636,11 +718,14 @@ fn resolve_prompt(raw: &str) -> String {
 }
 
 fn build_ai_options(
+    app: &AppHandle,
+    session_id: &str,
     provider: &ProviderConfig,
     model: &ModelConfig,
     engine: &app_settings::EngineSettings,
     prompt: &str,
     reasoning_effort: Option<String>,
+    tool_scope: AgentToolScope,
 ) -> Result<AiOptions, String> {
     let api_key = require_text(&provider.api_key, "API Key")?.to_string();
     let base_url = require_text(&provider.base_url, "Base URL")?.to_string();
@@ -649,20 +734,20 @@ fn build_ai_options(
     // and then mapped to OpenAI `max_tokens`. The app's model.context_length means
     // model capacity, so using it here can create invalid requests like max_tokens=128000.
     let context_length = None;
-    // 构建 system prompt：base（内置不可改）+ skills 列表 + engine（用户可配）
+    // 构建 system prompt：base（内置不可改，${} 变量由 resolve_prompt 替换）+ engine（用户可配）
     let base = resolve_prompt(BASE_SYSTEM_PROMPT);
-    let skills_xml = crate::plugins::format_skills_for_prompt();
     let system_prompt = if engine.system_prompt.trim().is_empty() {
-        if skills_xml.is_empty() { Some(base) } else { Some(format!("{}{}", base, skills_xml)) }
+        Some(base)
     } else {
-        if skills_xml.is_empty() {
-            Some(format!("{}\n\n{}", base, engine.system_prompt.trim()))
-        } else {
-            Some(format!("{}{}\n\n{}", base, skills_xml, engine.system_prompt.trim()))
-        }
+        Some(format!("{}\n\n{}", base, engine.system_prompt.trim()))
     };
 
-    let (tools_list, tools_map) = tools::build_tools();
+    let (tools_list, tools_map) = match tool_scope {
+        AgentToolScope::FullDesktop => {
+            tools::build_tools_for_session(app.clone(), session_id.to_string())
+        }
+        AgentToolScope::WeixinSafe => tools::build_weixin_safe_tools(),
+    };
 
     // 对 user prompt 也做变量替换
     let resolved_user_prompt = resolve_prompt(prompt);
@@ -732,6 +817,26 @@ fn find_model(
     }
 
     Err("没有找到选择的模型配置。".to_string())
+}
+
+fn select_default_agent_model(
+    providers: &[ProviderConfig],
+) -> Result<(ProviderConfig, ModelConfig), String> {
+    let mut first_available: Option<(ProviderConfig, ModelConfig)> = None;
+
+    for provider in providers {
+        for model in &provider.models {
+            if first_available.is_none() {
+                first_available = Some((provider.clone(), model.clone()));
+            }
+
+            if model.default_model {
+                return Ok((provider.clone(), model.clone()));
+            }
+        }
+    }
+
+    first_available.ok_or_else(|| "请先配置可用模型。".to_string())
 }
 
 fn parse_provider(provider: &str) -> Result<ProviderType, String> {

@@ -98,9 +98,9 @@ Migration should be explicit and backend-owned:
 5. Create artifact directory when `artifactRoot` changes.
 6. Verify copied files can be opened/read.
 7. Save the new active paths only after verification.
-8. Delete old managed data after the migration succeeds.
+8. Preserve old managed data; users can manually delete old directories after verifying the new paths work.
 
-The frontend must show an explicit warning before migration: if migration or cleanup causes data loss, the deleted old data cannot be recovered by the app, so users should manually back up the old storage directories first.
+The frontend must show an explicit warning before migration: migration copies managed data and switches to the new paths, while old directories are retained for manual cleanup after verification.
 
 ### API Model Blocks
 
@@ -222,7 +222,7 @@ Interaction thesis:
 ## Rollback
 
 - Storage migration saves the new active paths only after copied data is verified.
-- After successful migration, old managed data is deleted, so rollback depends on the user's manual backup.
+- After successful migration, old managed data is kept, so rollback can point settings back to the old directories.
 - If new storage settings fail, keep using the previous saved paths.
 - If chat stream fails, keep the user-only session, matching the existing retry decision.
 - If engine config migration fails, fall back to conservative defaults:
@@ -234,6 +234,6 @@ Interaction thesis:
 ## Confirmed Decisions
 
 1. `dialogueRoot` is the only root used for `otherone-agent` localfile session/context data.
-2. Storage migration copies all managed data to the new locations, verifies it, saves the new paths, then deletes old managed data.
+2. Storage migration copies all managed data to the new locations, verifies it, saves the new paths, then keeps old managed data for manual cleanup.
 3. Chat streaming can block storage path changes while a stream is active.
 4. Reasoning `不要思考` means omit reasoning fields from `AiOptions.other`.

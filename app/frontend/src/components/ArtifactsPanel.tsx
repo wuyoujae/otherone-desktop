@@ -34,6 +34,7 @@ type ArtifactsPanelProps = {
   addedFiles: FileArtifact[];
   deletedFiles: FileArtifact[];
   editedFiles: FileArtifact[];
+  onOpenFileLocation?: (item: FileArtifact) => void;
   open: boolean;
 };
 
@@ -101,7 +102,7 @@ function getFileColor(extension: string): string {
   return '#9ca3af';
 }
 
-export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, open }: ArtifactsPanelProps) {
+export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, onOpenFileLocation, open }: ArtifactsPanelProps) {
   const sections: ArtifactSection[] = [
     { id: 'edited', title: '编辑文件', items: editedFiles },
     { id: 'deleted', title: '删除文件', items: deletedFiles },
@@ -112,7 +113,13 @@ export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, open }: 
     <aside className={`artifacts-panel ${open ? 'is-open' : ''}`}>
       <div className="artifacts-panel-body">
         {sections.map((section) => (
-          <ArtifactSection key={section.id} section={section} getFileIcon={getFileIcon} getFileColor={getFileColor} />
+          <ArtifactSection
+            key={section.id}
+            section={section}
+            getFileIcon={getFileIcon}
+            getFileColor={getFileColor}
+            onOpenFileLocation={onOpenFileLocation}
+          />
         ))}
       </div>
     </aside>
@@ -123,9 +130,10 @@ type ArtifactSectionProps = {
   section: ArtifactSection;
   getFileIcon: (ext: string) => ReactNode;
   getFileColor: (ext: string) => string;
+  onOpenFileLocation?: (item: FileArtifact) => void;
 };
 
-function ArtifactSection({ section, getFileIcon, getFileColor }: ArtifactSectionProps) {
+function ArtifactSection({ section, getFileIcon, getFileColor, onOpenFileLocation }: ArtifactSectionProps) {
   const [open, setOpen] = useState(true);
 
   return (
@@ -141,7 +149,13 @@ function ArtifactSection({ section, getFileIcon, getFileColor }: ArtifactSection
             <div className="artifact-section-empty">暂无</div>
           ) : (
             section.items.map((item) => (
-              <div className="artifact-item" key={item.id}>
+              <button
+                className="artifact-item"
+                key={item.id}
+                type="button"
+                title="在文件管理器中显示"
+                onClick={() => onOpenFileLocation?.(item)}
+              >
                 <span className="artifact-item-icon" style={{ color: getFileColor(item.extension) }}>
                   {getFileIcon(item.extension)}
                 </span>
@@ -149,7 +163,7 @@ function ArtifactSection({ section, getFileIcon, getFileColor }: ArtifactSection
                   <span className="artifact-item-name">{item.name}</span>
                   <span className="artifact-item-path">{item.path}</span>
                 </div>
-              </div>
+              </button>
             ))
           )}
         </div>

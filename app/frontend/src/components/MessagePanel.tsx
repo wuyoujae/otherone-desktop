@@ -7,7 +7,8 @@ import {
   FolderSearch,
   GitBranch,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, forwardRef, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import type {
   AgentMessageItem,
   MessageGroup,
@@ -20,21 +21,74 @@ import { parseMarkdown, MarkdownRenderer, useStreamingMarkdown } from '../utils/
 
 const iconSize = { width: 14, height: 14 };
 
+// ============================================================
+// MessagePanel — 使用 react-virtuoso 虚拟滚动，仅渲染可见区域的消息
+// ============================================================
+
 type MessagePanelProps = {
   messages: MessageGroup[];
   emptyText?: string;
+  isStreaming?: boolean;
+  onBottomStateChange?: (atBottom: boolean) => void;
+  onRangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
 };
 
-export function MessagePanel({ messages, emptyText = '这个会话还没有消息。' }: MessagePanelProps) {
-  if (messages.length === 0) {
-    return <div className="message-panel-empty">{emptyText}</div>;
-  }
+export const MessagePanel = memo(
+  forwardRef<VirtuosoHandle, MessagePanelProps>(function MessagePanel(
+    { messages, emptyText = '这个会话还没有消息。', isStreaming = false, onBottomStateChange, onRangeChanged },
+    ref,
+  ) {
+    const lastAiGroupId = useMemo(
+      () => [...messages].reverse().find((message) => message.role === 'ai')?.id,
+      [messages],
+    );
 
-  return <MessagePanelContent messages={messages} />;
-}
+    if (messages.length === 0) {
+      return <div className="message-panel-empty">{emptyText}</div>;
+    }
 
-function MessagePanelContent({ messages, nested = false }: { messages: MessageGroup[]; nested?: boolean }) {
-  // 检测最后一个 AI 消息是否在流式传输中
+    return (
+      <Virtuoso
+        ref={ref}
+        className="message-panel-virtuoso"
+        style={{ height: '100%' }}
+        data={messages}
+        followOutput={isStreaming ? 'smooth' : undefined}
+        computeItemKey={(index, item) => item.id ?? index}
+        itemContent={(_index, message) => (
+          <div
+            id={message.role === 'user' ? `turn-${message.id}` : undefined}
+            className={message.role === 'user' ? 'chat-turn' : undefined}
+          >
+            <MessageGroupView
+              message={message}
+              nested={false}
+              holdActions={isStreaming && message.role === 'ai' && message.id === lastAiGroupId}
+            />
+          </div>
+        )}
+        atBottomStateChange={onBottomStateChange}
+        rangeChanged={onRangeChanged}
+        increaseViewportBy={{ top: 400, bottom: 400 }}
+        components={{
+          Header: () => <div style={{ height: 24 }} />,
+          Footer: () => (
+            <>
+              {isStreaming && <GeneratingIndicator />}
+              <div style={{ height: 160 }} />
+            </>
+          ),
+        }}
+      />
+    );
+  }),
+);
+
+// ============================================================
+// MessagePanelContent — 仅用于嵌套 Agent 子消息，不做虚拟滚动
+// ============================================================
+
+export function MessagePanelContent({ messages, nested = false }: { messages: MessageGroup[]; nested?: boolean }) {
   const lastAiGroup = [...messages].reverse().find((g) => g.role === 'ai');
   const isStreaming =
     !nested &&
@@ -58,7 +112,19 @@ function MessagePanelContent({ messages, nested = false }: { messages: MessageGr
   );
 }
 
-function MessageGroupView({ message, nested }: { message: MessageGroup; nested: boolean }) {
+// ============================================================
+// MessageGroupView
+// ============================================================
+
+const MessageGroupView = memo(function MessageGroupView({
+  message,
+  nested,
+  holdActions = false,
+}: {
+  message: MessageGroup;
+  nested: boolean;
+  holdActions?: boolean;
+}) {
   const isStreaming = message.role === 'ai' && message.items.some((item) => item.status === 'running');
 
   return (
@@ -68,16 +134,24 @@ function MessageGroupView({ message, nested }: { message: MessageGroup; nested: 
           <MessageItemView key={item.id} item={item} />
         ))}
       </div>
-      {!nested && !isStreaming && <MessageActions role={message.role} />}
+      {!nested && !isStreaming && !holdActions && <MessageActions role={message.role} />}
     </article>
   );
-}
+});
 
-function MessageItemView({ item }: { item: MessageItem }) {
+// ============================================================
+// MessageItemView
+// ============================================================
+
+const MessageItemView = memo(function MessageItemView({ item }: { item: MessageItem }) {
   const isStreaming = item.type === 'text' && item.status === 'running';
 
   if (item.type === 'text') {
-    return <div className="message-item-text">{renderTextContent(item.content, isStreaming)}</div>;
+    return (
+      <div className="message-item-text">
+        <RenderedTextContent content={item.content} isStreaming={isStreaming} />
+      </div>
+    );
   }
 
   if (item.type === 'agent') {
@@ -93,7 +167,29 @@ function MessageItemView({ item }: { item: MessageItem }) {
   }
 
   return <ToolRow item={item} />;
-}
+});
+
+// ============================================================
+// RenderedTextContent — 用 memo 避免已完成的文本消息重复解析 markdown
+// ============================================================
+
+const RenderedTextContent = memo(function RenderedTextContent({
+  content,
+  isStreaming,
+}: {
+  content: string;
+  isStreaming: boolean;
+}) {
+  const streamingNodes = useStreamingMarkdown(content, isStreaming);
+
+  if (!content) return <p></p>;
+
+  return <>{streamingNodes}</>;
+});
+
+// ============================================================
+// CollapsibleToolItem
+// ============================================================
 
 function CollapsibleToolItem({ item }: { item: ToolMessageItem }) {
   const isRunning = item.status === 'running';
@@ -121,12 +217,15 @@ function CollapsibleToolItem({ item }: { item: ToolMessageItem }) {
   );
 }
 
+// ============================================================
+// ThinkingItemView
+// ============================================================
+
 function ThinkingItemView({ item }: { item: ThinkingMessageItem }) {
   const isRunning = item.status === 'running';
   const [isOpen, setIsOpen] = useState(isRunning);
   const Icon = isRunning ? BrainCircuit : Check;
 
-  // 当 status 从 running 变成 completed 时自动合上
   const prevRunningRef = useRef(isRunning);
   useEffect(() => {
     if (prevRunningRef.current && !isRunning) {
@@ -170,6 +269,10 @@ function ThinkingItemView({ item }: { item: ThinkingMessageItem }) {
   );
 }
 
+// ============================================================
+// AgentItemView
+// ============================================================
+
 function AgentItemView({ item }: { item: AgentMessageItem }) {
   const isRunning = item.status === 'running';
   const [isOpen, setIsOpen] = useState(isRunning || Boolean(item.defaultOpen));
@@ -202,6 +305,10 @@ function AgentItemView({ item }: { item: AgentMessageItem }) {
   );
 }
 
+// ============================================================
+// ToolRow
+// ============================================================
+
 function ToolRow({ item, embedded = false }: { item: ToolMessageItem; embedded?: boolean }) {
   const isRunning = item.status === 'running';
   const Icon = isRunning ? FolderSearch : Check;
@@ -218,6 +325,10 @@ function ToolRow({ item, embedded = false }: { item: ToolMessageItem; embedded?:
   );
 }
 
+// ============================================================
+// CollapsibleBody
+// ============================================================
+
 function CollapsibleBody({ isOpen, children }: { isOpen: boolean; children: ReactNode }) {
   return (
     <div className="collapsible-body-wrapper" aria-hidden={!isOpen}>
@@ -226,7 +337,10 @@ function CollapsibleBody({ isOpen, children }: { isOpen: boolean; children: Reac
   );
 }
 
-/** 流式入场动画组件 — 将文字按 token 拆分，每个词独立 blur-word 动画 */
+// ============================================================
+// BlurWord — 流式入场动画
+// ============================================================
+
 function BlurWord({ text }: { text: string }) {
   const tokens = text.split(/(\s+)/);
   return (
@@ -239,6 +353,10 @@ function BlurWord({ text }: { text: string }) {
     </>
   );
 }
+
+// ============================================================
+// MessageActions
+// ============================================================
 
 function MessageActions({ role }: { role: MessageRole }) {
   return (
@@ -258,13 +376,9 @@ function MessageActions({ role }: { role: MessageRole }) {
   );
 }
 
-function RenderedTextContent({ content, isStreaming }: { content: string; isStreaming: boolean }) {
-  const streamingNodes = useStreamingMarkdown(content, isStreaming);
-
-  if (!content) return <p></p>;
-
-  return <>{streamingNodes}</>;
-}
+// ============================================================
+// GeneratingIndicator
+// ============================================================
 
 function GeneratingIndicator() {
   return (
@@ -277,8 +391,4 @@ function GeneratingIndicator() {
       </span>
     </div>
   );
-}
-
-function renderTextContent(content: string, isStreaming = false) {
-  return <RenderedTextContent content={content} isStreaming={isStreaming} />;
 }

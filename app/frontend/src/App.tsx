@@ -4,9 +4,11 @@ import {
   ArrowLeft,
   ArrowUp,
   Blocks,
+  BotMessageSquare,
   Cpu,
   Database,
   Folder,
+  FolderOpen,
   GitBranch,
   Hexagon,
   Key,
@@ -31,20 +33,31 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useDeferredValue } from 'react';
 import { CustomSelect } from './components/CustomControls';
 import { MessagePanel } from './components/MessagePanel';
 import { ModelSettings } from './components/ModelSettings';
 import { EngineSettingsPanel } from './components/EngineSettingsPanel';
 import { PluginsPage } from './components/PluginsPage';
 import { WorkflowPage } from './components/WorkflowPage';
+import { WeixinClawbotPage } from './components/WeixinClawbotPage';
 import { SearchOverlay } from './components/SearchOverlay';
 import { ArtifactsPanel, type FileArtifact } from './components/ArtifactsPanel';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { ToastViewport, type ToastKind, type ToastNotice } from './components/ToastSystem';
 import { defaultApiConfigs } from './data/defaultApiConfigs';
 import { loadApiConfigsFromStorage, saveApiConfigsToStorage } from './services/apiConfigStorage';
-import { loadAppSettingsFromStorage, migrateStorageSettingsToStorage, saveEngineSettingsToStorage } from './services/appSettingsStorage';
+import {
+  loadAppSettingsFromStorage,
+  migrateStorageSettingsToStorage,
+  openDirectoryInSystem,
+  revealFileInSystem,
+  saveEngineSettingsToStorage,
+  selectDirectoryFromSystem,
+} from './services/appSettingsStorage';
 import { testAiModel } from './services/aiModelTest';
+import { VirtuosoHandle } from 'react-virtuoso';
+import { listFileArtifacts, listenToFileArtifacts, type FileArtifactRecord } from './services/artifactStorage';
 import { cancelChatMessage, listenToChatStream, sendChatMessageToStorage, type ChatStreamEvent } from './services/chatStorage';
 import { loadSessionsFromStorage, readSessionFromStorage, updateSessionTitleInStorage } from './services/sessionStorage';
 import { defaultEngineSettings, type StorageSettings } from './types/appSettings';
@@ -59,11 +72,34 @@ import type {
   ToolMessageItem,
 } from './types/session';
 
-type ViewName = 'new' | 'chat' | 'settings' | 'workflow' | 'plugins';
+type ViewName = 'new' | 'chat' | 'settings' | 'workflow' | 'plugins' | 'weixinClawbot';
 type ThemeName = 'dark' | 'light';
 type SettingsSection = 'general' | 'models' | 'api' | 'storage' | 'knowledge';
+type StorageRootKey = keyof StorageSettings;
+type PendingStorageMigration = {
+  changedKeys: StorageRootKey[];
+  storage: StorageSettings;
+  targetKey: StorageRootKey;
+};
+type StreamItemOverlay = Array<MessageItem[] | undefined>;
+type PendingChatSend = {
+  sessionId: string;
+  aiGroupId: string;
+  userGroupIds: string[];
+  prompts: string[];
+  timer: ReturnType<typeof setTimeout> | null;
+  previousSession: SessionDetail | null;
+  previousSummary: SessionSummary | null;
+  previousSummaryIndex: number;
+  modelId: string;
+  reasoningEffort: ReasoningEffort;
+  contextCompressionEnabled: boolean;
+  branchModeEnabled: boolean;
+  targetModeEnabled: boolean;
+};
 
 const iconSize = { width: 16, height: 16 };
+const SEND_REMORSE_DELAY_MS = 3000;
 const noModelOption = { label: '未配置模型', value: 'none' };
 
 const reasoningOptions: Array<{ label: string; value: ReasoningEffort }> = [
@@ -73,27 +109,250 @@ const reasoningOptions: Array<{ label: string; value: ReasoningEffort }> = [
   { label: 'Low', value: 'low' },
 ];
 
-const streamAiGroupId = (sessionId: string) => `stream-ai-${sessionId}`;
+const streamAiGroupId = (sessionId: string, turnId = 'current') => `stream-ai-${sessionId}-${turnId}`;
 
 // 每个 Agent loop 迭代一组独立的 thinking + text + tool item
-const streamThinkingId = (sessionId: string, iter: number) => `stream-thinking-${sessionId}-${iter}`;
-const streamTextId = (sessionId: string, iter: number) => `stream-text-${sessionId}-${iter}`;
-const streamToolId = (sessionId: string, iter: number, idx: number) => `stream-tool-${sessionId}-${iter}-${idx}`;
+const streamThinkingId = (groupId: string, iter: number) => `${groupId}-thinking-${iter}`;
+const streamTextId = (groupId: string, iter: number) => `${groupId}-text-${iter}`;
+const streamToolPrefix = (groupId: string, iter: number) => `${groupId}-tool-${iter}-`;
+const streamToolId = (groupId: string, iter: number, idx: number) => `${groupId}-tool-${iter}-${idx}`;
+const streamToolItemStatus = (event: ChatStreamEvent) =>
+  event.toolStatus === 'completed' || event.toolStatus === 'error' ? 'completed' as const : 'running' as const;
 
+function createOptimisticUserGroup(sessionId: string, prompt: string, createdAt: string) {
+  const turnId = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const userGroupId = `stream-user-${sessionId}-${turnId}`;
+  const userGroup: MessageGroup = {
+    id: userGroupId,
+    role: 'user',
+    items: [
+      {
+        id: `stream-user-item-${userGroupId}`,
+        type: 'text',
+        content: prompt,
+        status: 'completed',
+        entryId: '',
+        sourceRole: 'user',
+        createdAt,
+      },
+    ],
+  };
+
+  return { turnId, userGroupId, userGroup };
+}
+
+function createOptimisticAiGroup(aiGroupId: string, createdAt: string): MessageGroup {
+  return {
+    id: aiGroupId,
+    role: 'ai',
+    items: [
+      {
+        id: streamTextId(aiGroupId, 0),
+        type: 'text',
+        content: '',
+        status: 'running',
+        entryId: '',
+        sourceRole: 'assistant',
+        createdAt,
+      },
+    ],
+  };
+}
+
+function insertUserGroupBeforeAiGroup(
+  session: SessionDetail,
+  userGroup: MessageGroup,
+  aiGroupId: string,
+  updatedAt: string,
+): SessionDetail {
+  const aiGroupIndex = session.messages.findIndex((group) => group.id === aiGroupId);
+  const messages =
+    aiGroupIndex >= 0
+      ? [...session.messages.slice(0, aiGroupIndex), userGroup, ...session.messages.slice(aiGroupIndex)]
+      : [...session.messages, userGroup];
+
+  return { ...session, updatedAt, messages };
+}
+
+function completeStreamItemsFromGroup(
+  session: SessionDetail | null | undefined,
+  groupId: string | undefined,
+): MessageItem[] {
+  if (!session || !groupId) return [];
+
+  const group = session.messages.find((message) => message.id === groupId);
+  if (!group) return [];
+
+  return completeStreamItems(group.items);
+}
+
+function completeStreamItems(items: MessageItem[]): MessageItem[] {
+  return items
+    .filter((item) => item.type !== 'thinking' || Boolean(item.content))
+    .map((item) => {
+      if (item.type === 'thinking') {
+        return {
+          ...item,
+          status: 'completed' as const,
+          label: '深度思考已完成',
+        };
+      }
+
+      return {
+        ...item,
+        status: 'completed' as const,
+      };
+    });
+}
+
+function collectStreamItemOverlay(session: SessionDetail | null | undefined): StreamItemOverlay {
+  const overlay: StreamItemOverlay = [];
+  if (!session) return overlay;
+
+  let aiIndex = -1;
+  for (const group of session.messages) {
+    if (group.role !== 'ai') continue;
+
+    aiIndex += 1;
+    const items = completeStreamItems(group.items);
+    if (items.some((item) => item.type === 'thinking')) {
+      overlay[aiIndex] = items;
+    }
+  }
+
+  return overlay;
+}
+
+function hasStreamItemOverlay(overlay: StreamItemOverlay | null | undefined) {
+  return Boolean(overlay?.some((items) => items?.some((item) => item.type === 'thinking')));
+}
+
+function mergeStreamItemOverlays(
+  current: StreamItemOverlay | null | undefined,
+  incoming: StreamItemOverlay | null | undefined,
+): StreamItemOverlay {
+  const next = [...(current ?? [])];
+  incoming?.forEach((items, index) => {
+    if (items?.some((item) => item.type === 'thinking')) {
+      next[index] = items;
+    }
+  });
+  return next;
+}
+
+function mergeStreamItemsIntoStoredSession(
+  session: SessionDetail,
+  cachedSession: SessionDetail | null | undefined,
+  activeStreamGroupId?: string,
+  activeStreamItems?: MessageItem[],
+  streamItemOverlay?: StreamItemOverlay,
+): SessionDetail {
+  const cachedAiGroups = cachedSession?.messages.filter((group) => group.role === 'ai') ?? [];
+  let aiIndex = -1;
+  let activeStreamItemsUsed = false;
+
+  const messages = session.messages.map((group) => {
+    if (group.role !== 'ai') return group;
+
+    aiIndex += 1;
+    const cachedGroup = cachedAiGroups[aiIndex];
+    const cachedItems = cachedGroup?.items ?? [];
+    const overlayItems = streamItemOverlay?.[aiIndex];
+    const streamItems =
+      activeStreamItems && cachedGroup?.id === activeStreamGroupId
+        ? activeStreamItems
+        : cachedItems.some((item) => item.type === 'thinking')
+          ? cachedItems
+          : overlayItems ?? cachedItems;
+
+    if (activeStreamItems && cachedGroup?.id === activeStreamGroupId) {
+      activeStreamItemsUsed = true;
+    }
+
+    if (!streamItems.some((item) => item.type === 'thinking')) return group;
+
+    return {
+      ...group,
+      items: mergeStreamItemsIntoStoredItems(group.items, completeStreamItems(streamItems)),
+    };
+  });
+
+  if (activeStreamItems && !activeStreamItemsUsed && activeStreamItems.some((item) => item.type === 'thinking')) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const group = messages[index];
+      if (group.role !== 'ai') continue;
+
+      messages[index] = {
+        ...group,
+        items: mergeStreamItemsIntoStoredItems(group.items, completeStreamItems(activeStreamItems)),
+      };
+      break;
+    }
+  }
+
+  return { ...session, messages };
+}
+
+function mergeStreamItemsIntoStoredItems(
+  storedItems: MessageItem[],
+  streamItems: MessageItem[],
+): MessageItem[] {
+  const storedNonThinkingItems = storedItems.filter((item) => item.type !== 'thinking');
+  const usedStoredIndexes = new Set<number>();
+  const mergedItems: MessageItem[] = [];
+
+  const takeStoredItem = (type: MessageItem['type']) => {
+    const index = storedNonThinkingItems.findIndex(
+      (item, itemIndex) => item.type === type && !usedStoredIndexes.has(itemIndex),
+    );
+    if (index < 0) return null;
+    usedStoredIndexes.add(index);
+    return storedNonThinkingItems[index];
+  };
+
+  for (const streamItem of streamItems) {
+    if (streamItem.type === 'thinking') {
+      if (streamItem.content) {
+        mergedItems.push(streamItem);
+      }
+      continue;
+    }
+
+    const storedItem = takeStoredItem(streamItem.type);
+    if (storedItem) {
+      mergedItems.push(storedItem);
+    }
+  }
+
+  storedNonThinkingItems.forEach((item, index) => {
+    if (!usedStoredIndexes.has(index)) {
+      mergedItems.push(item);
+    }
+  });
+
+  return mergedItems.length > 0 ? mergedItems : storedItems;
+}
+
+/**
+ * 优化版：仅更新匹配的事件 AI group，其他 group 保持引用不变。
+ * 配合 React.memo，非流式消息组件跳过 re-render。
+ */
 function applyStreamEventToSession(
   session: SessionDetail,
   event: ChatStreamEvent,
   iterMap: Map<string, number>,
+  streamGroupMap: Map<string, string>,
 ): SessionDetail {
   const createdAt = new Date().toISOString();
-  const aiGroupId = streamAiGroupId(event.sessionId);
+  const eventType = event.eventType === 'thinking' ? 'assistant_thinking_delta' : event.eventType;
+  const aiGroupId = streamGroupMap.get(event.sessionId) ?? streamAiGroupId(event.sessionId);
 
   // --- iteration 管理 ---
   const getIter = () => iterMap.get(event.sessionId) ?? 0;
   const bumpIter = () => { const n = getIter() + 1; iterMap.set(event.sessionId, n); };
 
   const makeThinking = (iter: number): ThinkingMessageItem => ({
-    id: streamThinkingId(event.sessionId, iter),
+    id: streamThinkingId(aiGroupId, iter),
     type: 'thinking',
     label: '正在深度思考',
     content: '',
@@ -104,7 +363,7 @@ function applyStreamEventToSession(
   });
 
   const makeText = (iter: number): TextMessageItem => ({
-    id: streamTextId(event.sessionId, iter),
+    id: streamTextId(aiGroupId, iter),
     type: 'text',
     content: '',
     status: 'running',
@@ -113,140 +372,202 @@ function applyStreamEventToSession(
     createdAt,
   });
 
-  let foundAiGroup = false;
-  let nextMessages = session.messages.map((group) => {
-    if (group.id !== aiGroupId) return group;
-    foundAiGroup = true;
+  const completeCurrentIterationItems = (sourceItems: MessageItem[], currentIter: number) => {
+    const thinkId = streamThinkingId(aiGroupId, currentIter);
+    const textId = streamTextId(aiGroupId, currentIter);
+    const toolPrefix = streamToolPrefix(aiGroupId, currentIter);
 
-    let items = group.items;
-    const iter = getIter();
-
-    // ── assistant_thinking_delta ──
-    if (event.eventType === 'assistant_thinking_delta') {
-      const thinkId = streamThinkingId(event.sessionId, iter);
-      const exists = items.some((i) => i.id === thinkId);
-      if (!exists) {
-        // 新 iteration 的 thinking item — 放到最后
-        items = [...items, makeThinking(iter)];
+    return sourceItems.map((item) => {
+      if (item.id === thinkId && item.type === 'thinking' && item.status === 'running') {
+        return {
+          ...item,
+          label: '深度思考已完成',
+          status: 'completed' as const,
+        } as ThinkingMessageItem;
       }
-      items = items.map((i) =>
-        i.id === thinkId && i.type === 'thinking'
-          ? { ...i, content: `${(i as ThinkingMessageItem).content}${event.content}`, status: 'running' as const }
-          : i,
-      );
-    }
 
-    // ── assistant_delta ──
-    if (event.eventType === 'assistant_delta') {
-      const textId = streamTextId(event.sessionId, iter);
-      const exists = items.some((i) => i.id === textId);
-      if (!exists) {
-        // 插入到当前 iteration 的 thinking 之后（如果有）
-        const thinkId = streamThinkingId(event.sessionId, iter);
-        const thinkIdx = items.findIndex((i) => i.id === thinkId);
-        if (thinkIdx >= 0) {
-          items = [...items.slice(0, thinkIdx + 1), makeText(iter), ...items.slice(thinkIdx + 1)];
-        } else {
-          items = [...items, makeText(iter)];
-        }
+      if (item.id === textId && item.type === 'text' && item.status === 'running') {
+        return {
+          ...item,
+          status: 'completed' as const,
+        } as TextMessageItem;
       }
-      items = items.map((i) =>
-        i.id === textId && i.type === 'text'
-          ? { ...i, content: `${(i as TextMessageItem).content}${event.content}`, status: 'running' as const }
-          : i,
-      );
-    }
 
-    // ── tool_call ──
-    if (event.eventType === 'tool_call') {
-      const toolId = streamToolId(event.sessionId, iter, items.filter((i) => i.type === 'tool').length);
-      const toolItem: ToolMessageItem = {
-        id: toolId,
-        type: 'tool',
-        label: event.toolLabel || '工具调用',
-        status: 'completed',
-        entryId: '',
-        sourceRole: 'assistant',
-        createdAt,
-        detail: event.toolDetail,
-      };
-      // 插入到当前 iteration text 之后、下一个 iteration 开始之前
-      const textId = streamTextId(event.sessionId, iter);
-      const textIdx = items.findIndex((i) => i.id === textId);
-      if (textIdx >= 0) {
-        items = [...items.slice(0, textIdx + 1), toolItem, ...items.slice(textIdx + 1)];
-      } else {
-        items = [...items, toolItem];
+      if (item.id.startsWith(toolPrefix) && item.type === 'tool' && item.status === 'running') {
+        return {
+          ...item,
+          status: 'completed' as const,
+        } as ToolMessageItem;
       }
-      // 进入下一个迭代
-      bumpIter();
-    }
 
-    // ── complete / error / cancelled — 标记所有 running 为 completed ──
-    if (event.eventType === 'complete' || event.eventType === 'error' || event.eventType === 'cancelled') {
-      items = items.map((i) => {
-        if (i.status !== 'running') return i;
-        if (i.type === 'thinking') {
-          return {
-            ...i,
-            label: event.eventType === 'cancelled' ? '对话已被用户中断' : event.eventType === 'complete' ? '深度思考已完成' : '深度思考已中断',
-            status: 'completed' as const,
-          } as ThinkingMessageItem;
-        }
-        if (i.type === 'text') {
-          return {
-            ...i,
-            content: (i as TextMessageItem).content || event.content || (event.error ?? ''),
-            status: 'completed' as const,
-          } as TextMessageItem;
-        }
-        return { ...i, status: 'completed' as const };
-      });
-      // reset iteration counter
-      iterMap.set(event.sessionId, 0);
-    }
+      return item;
+    });
+  };
 
-    return { ...group, items };
-  });
+  // 快速查找已存在的 AI group
+  const aiGroupIdx = session.messages.findIndex((g) => g.id === aiGroupId);
 
-  // ── 首次事件，创建 AI group ──
-  if (!foundAiGroup) {
+  if (aiGroupIdx < 0) {
+    // ── 首次事件，创建新的 AI group ──
     let items: MessageItem[] = [];
     const iter = getIter();
 
-    if (event.eventType === 'assistant_thinking_delta') {
+    if (eventType === 'assistant_thinking_delta') {
       items.push({ ...makeThinking(iter), content: event.content });
     }
 
-    if (event.eventType === 'tool_call') {
-      const toolItem: ToolMessageItem = {
-        id: streamToolId(event.sessionId, iter, 0),
+    if (eventType === 'tool_call') {
+      items.push({
+        id: streamToolId(aiGroupId, iter, 0),
         type: 'tool',
         label: event.toolLabel || '工具调用',
-        status: 'completed',
+        status: streamToolItemStatus(event),
         entryId: '',
         sourceRole: 'assistant',
         createdAt,
         detail: event.toolDetail,
-      };
-      items.push(toolItem);
-      bumpIter();
+      } as ToolMessageItem);
     }
 
-    if (event.eventType === 'assistant_delta' || event.eventType === 'complete' || event.eventType === 'error') {
+    if (eventType === 'assistant_delta' || eventType === 'complete' || eventType === 'error') {
       items.push({
         ...makeText(iter),
-        content: event.eventType === 'assistant_delta' ? event.content : event.eventType === 'complete' ? event.content : (event.error ?? ''),
-        status: event.eventType === 'assistant_delta' ? 'running' as const : 'completed' as const,
+        content: eventType === 'assistant_delta' ? event.content : eventType === 'complete' ? event.content : (event.error ?? ''),
+        status: eventType === 'assistant_delta' ? 'running' as const : 'completed' as const,
       });
     }
 
-    if (items.length > 0) {
-      nextMessages = [...nextMessages, { id: aiGroupId, role: 'ai' as const, items }];
+    if (items.length === 0) return session;
+
+    return {
+      ...session,
+      updatedAt: createdAt,
+      messages: [...session.messages, { id: aiGroupId, role: 'ai' as const, items }],
+    };
+  }
+
+  // ── 已有 AI group：仅更新这一个 group ──
+  const group = session.messages[aiGroupIdx];
+  let items = group.items;
+  let iter = getIter();
+
+  if (
+    (eventType === 'assistant_thinking_delta' || eventType === 'assistant_delta') &&
+    items.some((item) => item.type === 'tool' && item.id.startsWith(streamToolPrefix(aiGroupId, iter)))
+  ) {
+    items = completeCurrentIterationItems(items, iter);
+    bumpIter();
+    iter = getIter();
+  }
+
+  // ── assistant_thinking_delta ──
+  if (eventType === 'assistant_thinking_delta') {
+    const thinkId = streamThinkingId(aiGroupId, iter);
+    const exists = items.some((i) => i.id === thinkId);
+    if (!exists) {
+      const textId = streamTextId(aiGroupId, iter);
+      const textIdx = items.findIndex((i) => i.id === textId);
+      items = textIdx >= 0
+        ? [...items.slice(0, textIdx), makeThinking(iter), ...items.slice(textIdx)]
+        : [...items, makeThinking(iter)];
+    }
+    items = items.map((i) =>
+      i.id === thinkId && i.type === 'thinking'
+        ? { ...i, content: `${(i as ThinkingMessageItem).content}${event.content}`, status: 'running' as const }
+        : i,
+    );
+  }
+
+  // ── assistant_delta ──
+  if (eventType === 'assistant_delta') {
+    const textId = streamTextId(aiGroupId, iter);
+    const exists = items.some((i) => i.id === textId);
+    if (!exists) {
+      const thinkId = streamThinkingId(aiGroupId, iter);
+      const thinkIdx = items.findIndex((i) => i.id === thinkId);
+      if (thinkIdx >= 0) {
+        items = [...items.slice(0, thinkIdx + 1), makeText(iter), ...items.slice(thinkIdx + 1)];
+      } else {
+        items = [...items, makeText(iter)];
+      }
+    }
+    items = items.map((i) =>
+      i.id === textId && i.type === 'text'
+        ? { ...i, content: `${(i as TextMessageItem).content}${event.content}`, status: 'running' as const }
+        : i,
+    );
+  }
+
+  // ── tool_call ──
+  if (eventType === 'tool_call') {
+    items = completeCurrentIterationItems(items, iter);
+    const toolId = streamToolId(
+      aiGroupId,
+      iter,
+      items.filter((item) => item.type === 'tool' && item.id.startsWith(streamToolPrefix(aiGroupId, iter))).length,
+    );
+    const toolItem: ToolMessageItem = {
+      id: toolId,
+      type: 'tool',
+      label: event.toolLabel || '工具调用',
+      status: streamToolItemStatus(event),
+      entryId: '',
+      sourceRole: 'assistant',
+      createdAt,
+      detail: event.toolDetail,
+    };
+    const textId = streamTextId(aiGroupId, iter);
+    const textIdx = items.findIndex((i) => i.id === textId);
+    const textItem = textIdx >= 0 && items[textIdx].type === 'text' ? (items[textIdx] as TextMessageItem) : null;
+    if (textIdx >= 0 && textItem?.content) {
+      items = [...items.slice(0, textIdx + 1), toolItem, ...items.slice(textIdx + 1)];
+    } else if (textIdx >= 0) {
+      items = [...items.slice(0, textIdx), ...items.slice(textIdx + 1), toolItem];
+    } else {
+      items = [...items, toolItem];
     }
   }
 
-  return { ...session, updatedAt: createdAt, messages: nextMessages };
+  // ── complete / error / cancelled ──
+  if (eventType === 'complete' || eventType === 'error' || eventType === 'cancelled') {
+    items = items.map((i) => {
+      if (i.status !== 'running') return i;
+      if (i.type === 'thinking') {
+        return {
+          ...i,
+          label: eventType === 'cancelled' ? '对话已被用户中断' : eventType === 'complete' ? '深度思考已完成' : '深度思考已中断',
+          status: 'completed' as const,
+        } as ThinkingMessageItem;
+      }
+      if (i.type === 'text') {
+        return {
+          ...i,
+          content: (i as TextMessageItem).content || event.content || (event.error ?? ''),
+          status: 'completed' as const,
+        } as TextMessageItem;
+      }
+      return { ...i, status: 'completed' as const };
+    });
+    iterMap.set(event.sessionId, 0);
+  }
+
+  if (items === group.items) return session; // 无变化则返回原对象
+
+  // 仅替换变化的那个 group，其余保持引用
+  const newMessages = [...session.messages];
+  newMessages[aiGroupIdx] = { ...group, items };
+
+  return { ...session, updatedAt: createdAt, messages: newMessages };
+}
+
+function artifactRecordToFileArtifact(record: FileArtifactRecord): FileArtifact {
+  return {
+    id: record.id,
+    name: record.name,
+    path: record.path,
+    extension: record.extension,
+    timestamp: record.createdAt,
+  };
 }
 
 export function App() {
@@ -264,11 +585,14 @@ export function App() {
   const [storageStatus, setStorageStatus] = useState('配置尚未保存。');
   const [storagePath, setStoragePath] = useState('C:\\Users\\jae\\AppData\\Roaming\\Otherone');
   const [storageDraft, setStorageDraft] = useState(storagePath);
-  const [migrationStatus, setMigrationStatus] = useState('当前使用 localfile 与 SQLite 组合存储。');
+  const [storageMigrationStatus, setStorageMigrationStatus] = useState('当前使用 localfile 与 SQLite 组合存储。');
   const [artifactPath, setArtifactPath] = useState('C:\\Users\\jae\\AppData\\Roaming\\Otherone\\artifacts');
   const [artifactDraft, setArtifactDraft] = useState(artifactPath);
+  const [artifactMigrationStatus, setArtifactMigrationStatus] = useState('当前产物目录用于保存 Agent 运行产物。');
   const [dialogueDataPath, setDialogueDataPath] = useState('C:\\Users\\jae\\AppData\\Roaming\\Otherone\\dialogues');
   const [dialogueDataDraft, setDialogueDataDraft] = useState(dialogueDataPath);
+  const [dialogueMigrationStatus, setDialogueMigrationStatus] = useState('当前对话目录用于保存 otherone localfile 数据。');
+  const [pendingStorageMigration, setPendingStorageMigration] = useState<PendingStorageMigration | null>(null);
   const [engineSettings, setEngineSettings] = useState(defaultEngineSettings);
   const [testingProviderId, setTestingProviderId] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
@@ -278,20 +602,9 @@ export function App() {
   const [targetModeEnabled, setTargetModeEnabled] = useState(false);
   const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [editedFiles] = useState<FileArtifact[]>([
-    { id: 'e1', name: 'index.tsx', path: 'src/pages/index.tsx', extension: 'tsx', timestamp: '2 分钟前' },
-    { id: 'e2', name: 'styles.css', path: 'src/styles.css', extension: 'css', timestamp: '5 分钟前' },
-    { id: 'e3', name: 'report.pdf', path: 'output/report.pdf', extension: 'pdf', timestamp: '12 分钟前' },
-  ]);
-  const [deletedFiles] = useState<FileArtifact[]>([
-    { id: 'd1', name: 'old-config.json', path: 'config/old-config.json', extension: 'json', timestamp: '8 分钟前' },
-  ]);
-  const [addedFiles] = useState<FileArtifact[]>([
-    { id: 'a1', name: 'dashboard.tsx', path: 'src/components/dashboard.tsx', extension: 'tsx', timestamp: '刚刚' },
-    { id: 'a2', name: 'logo.png', path: 'assets/logo.png', extension: 'png', timestamp: '3 分钟前' },
-    { id: 'a3', name: 'proposal.pptx', path: 'output/proposal.pptx', extension: 'pptx', timestamp: '7 分钟前' },
-    { id: 'a4', name: 'data.xlsx', path: 'data/data.xlsx', extension: 'xlsx', timestamp: '10 分钟前' },
-  ]);
+  const [editedFiles, setEditedFiles] = useState<FileArtifact[]>([]);
+  const [deletedFiles, setDeletedFiles] = useState<FileArtifact[]>([]);
+  const [addedFiles, setAddedFiles] = useState<FileArtifact[]>([]);
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSession, setActiveSession] = useState<SessionDetail | null>(null);
@@ -299,38 +612,73 @@ export function App() {
   const [isLoadingSessionDetail, setIsLoadingSessionDetail] = useState(false);
   const streamingSessionIdsRef = useRef<Set<string>>(new Set());
   const sessionCacheRef = useRef<Map<string, SessionDetail>>(new Map());
+  const streamItemOverlayRef = useRef<Map<string, StreamItemOverlay>>(new Map());
+  const pendingChatSendsRef = useRef<Map<string, PendingChatSend>>(new Map());
+  const activeSessionIdRef = useRef<string | null>(null);
   const [sessionError, setSessionError] = useState('');
   const [editingSessionId, setEditingSessionId] = useState('');
   const [editingSessionTitle, setEditingSessionTitle] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const chatSectionRef = useRef<HTMLElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const toastCounterRef = useRef(0);
-  const isAutoScrollEnabledRef = useRef(true);
   const streamIterRef = useRef<Map<string, number>>(new Map());
+  const activeStreamGroupIdRef = useRef<Map<string, string>>(new Map());
   const [showScrollButton, setShowScrollButton] = useState(false);
   const timelineHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastScrollTopRef = useRef(0);
   const pendingStreamEventsRef = useRef<Map<string, ChatStreamEvent[]>>(new Map());
   const previousView = useRef<ViewName>('new');
 
-  const isAiStreaming = useMemo(() => {
+  const hasRunningAiItem = useMemo(() => {
     if (!activeSession) return false;
     return activeSession.messages.some((group) =>
       group.role === 'ai' && group.items.some((item) => item.status === 'running'),
     );
   }, [activeSession]);
+  const isCurrentSessionStreaming = activeSession != null && streamingSessionIdsRef.current.has(activeSession.id);
+  const isAiStreaming = isCurrentSessionStreaming || hasRunningAiItem;
 
-  // Timeline 导航：收集所有用户 prompt 作为锚点
+  // 流式期间用 useDeferredValue 延迟渲染，保证用户输入/点击不被阻塞
+  const rawMessages = activeSession?.messages ?? [];
+  const displayMessages = useDeferredValue(rawMessages);
+
+  const rememberStreamItemOverlay = useCallback((sessionId: string, session: SessionDetail | null | undefined) => {
+    const incoming = collectStreamItemOverlay(session);
+    if (!hasStreamItemOverlay(incoming)) return;
+
+    const current = streamItemOverlayRef.current.get(sessionId);
+    streamItemOverlayRef.current.set(sessionId, mergeStreamItemOverlays(current, incoming));
+  }, []);
+
+  const setStorageRootStatus = (key: StorageRootKey, message: string) => {
+    if (key === 'dataRoot') {
+      setStorageMigrationStatus(message);
+      return;
+    }
+
+    if (key === 'artifactRoot') {
+      setArtifactMigrationStatus(message);
+      return;
+    }
+
+    setDialogueMigrationStatus(message);
+  };
+
+  const setChangedStorageRootStatuses = (keys: StorageRootKey[], message: string) => {
+    keys.forEach((key) => setStorageRootStatus(key, message));
+  };
+
+  // Timeline 导航：收集所有用户 prompt 作为锚点（含 messages 数组索引用于 Virtuoso scrollToIndex）
   const timelineAnchors = useMemo(() => {
     if (!activeSession) return [];
-    return activeSession.messages
-      .filter((group) => group.role === 'user')
-      .map((group) => {
-        const textItem = group.items.find((item) => item.type === 'text');
-        const preview = (textItem?.content ?? '新对话').slice(0, 32);
-        return { id: group.id, label: preview || '新对话' };
-      });
+    const anchors: Array<{ id: string; label: string; messageIndex: number }> = [];
+    activeSession.messages.forEach((group, idx) => {
+      if (group.role !== 'user') return;
+      const textItem = group.items.find((item) => item.type === 'text');
+      const preview = (textItem?.content ?? '新对话').slice(0, 32);
+      anchors.push({ id: group.id, label: preview || '新对话', messageIndex: idx });
+    });
+    return anchors;
   }, [activeSession]);
 
   // Timeline 可见性 & 当前激活索引
@@ -400,10 +748,15 @@ export function App() {
         applyStorageSettings(settings.storage);
         setEngineSettings(settings.engine);
         setReasoningEffort(settings.engine.defaultReasoningEffort);
-        setMigrationStatus('已从本地设置读取存储路径。');
+        setStorageMigrationStatus('已从本地设置读取数据存储路径。');
+        setArtifactMigrationStatus('已从本地设置读取产物存储路径。');
+        setDialogueMigrationStatus('已从本地设置读取对话存储路径。');
       } catch (error) {
         if (!cancelled) {
-          setMigrationStatus(error instanceof Error ? error.message : String(error));
+          const message = error instanceof Error ? error.message : String(error);
+          setStorageMigrationStatus(message);
+          setArtifactMigrationStatus(message);
+          setDialogueMigrationStatus(message);
         }
       }
     }
@@ -484,151 +837,72 @@ export function App() {
     resizePrompt();
   }, [message]);
 
-  // 直接钉在底部：每次消息更新时立刻 scrollTop = scrollHeight
-  const pinToBottom = useCallback(() => {
-    const section = chatSectionRef.current;
-    if (!section) return;
-    if (!isAutoScrollEnabledRef.current) return;
-    section.scrollTop = section.scrollHeight;
-  }, []);
-
-  // 监听鼠标滚轮 — 向上滚打断，向下滚到底恢复
-  useEffect(() => {
-    const section = chatSectionRef.current;
-    if (!section || view !== 'chat') return;
-
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) {
-        isAutoScrollEnabledRef.current = false;
-        setShowScrollButton(true);
-        setTimelineVisible(true);
-      } else if (e.deltaY > 0) {
-        const sec = chatSectionRef.current;
-        if (!sec) return;
-        const dist = sec.scrollHeight - sec.scrollTop - sec.clientHeight;
-        if (dist < 50) {
-          isAutoScrollEnabledRef.current = true;
-          setShowScrollButton(false);
-          setTimelineVisible(false);
-        }
+  // ---- Virtuoso 回调：处理底部状态变化 (替代手动 onScroll + wheel 监听) ----
+  const handleBottomStateChange = useCallback((atBottom: boolean) => {
+    setShowScrollButton(!atBottom);
+    if (atBottom) {
+      setTimelineVisible(false);
+      if (timelineHideTimerRef.current) {
+        clearTimeout(timelineHideTimerRef.current);
+        timelineHideTimerRef.current = null;
       }
-    };
-
-    section.addEventListener('wheel', onWheel, { passive: true });
-    return () => section.removeEventListener('wheel', onWheel);
-  }, [view]);
-
-  // 流式/非流式消息更新 → 直接钉到底部
-  useEffect(() => {
-    if (view !== 'chat' || !activeSession) return;
-    pinToBottom();
-  }, [activeSession?.messages, view, pinToBottom]);
-
-  const handleScrollToBottom = useCallback(() => {
-    const section = chatSectionRef.current;
-    if (!section) return;
-    isAutoScrollEnabledRef.current = true;
-    setShowScrollButton(false);
-    setTimelineVisible(false);
-    section.scrollTo({ top: section.scrollHeight, behavior: 'smooth' });
-  }, []);
-
-  // 跳转到指定锚点 (timeline 点击)
-  const jumpToAnchor = useCallback((groupId: string) => {
-    const section = chatSectionRef.current;
-    if (!section) return;
-    const el = document.getElementById(`turn-${groupId}`);
-    if (!el) return;
-
-    // 高亮动画
-    document.querySelectorAll('.chat-turn').forEach((turn) => turn.classList.remove('target-highlight'));
-    void (el as HTMLElement).offsetWidth;
-    el.classList.add('target-highlight');
-
-    // 平滑滚动到目标
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
-  // 判断是否在底部 + 滚动方向检测 + timeline 3s 自动隐藏
-  const updateScrollState = useCallback(() => {
-    const section = chatSectionRef.current;
-    if (!section) return;
-    const distanceFromBottom = section.scrollHeight - section.scrollTop - section.clientHeight;
-    const isAtBottom = distanceFromBottom < 50;
-
-    // 触底/离底更新 UI
-    setShowScrollButton(!isAtBottom);
-
-    // 检测滚动方向
-    const currentTop = section.scrollTop;
-    const isScrollingUp = currentTop < lastScrollTopRef.current;
-    lastScrollTopRef.current = currentTop;
-
-    // 清除之前的 timer
-    if (timelineHideTimerRef.current) {
-      clearTimeout(timelineHideTimerRef.current);
-      timelineHideTimerRef.current = null;
-    }
-
-    if (isScrollingUp && !isAtBottom) {
+    } else {
       setTimelineVisible(true);
-    } else if (!isAtBottom) {
-      // 停止滚动或向下滚动 → 3s 后隐藏
+      if (timelineHideTimerRef.current) {
+        clearTimeout(timelineHideTimerRef.current);
+      }
       timelineHideTimerRef.current = setTimeout(() => {
         setTimelineVisible(false);
         timelineHideTimerRef.current = null;
       }, 3000);
-    } else {
-      setTimelineVisible(false);
     }
   }, []);
 
-  useEffect(() => {
-    if (view !== 'chat') {
-      return;
-    }
+  // ---- Virtuoso 回调：可见范围变化 (替代 IntersectionObserver scrollspy) ----
+  const handleRangeChanged = useCallback(
+    (range: { startIndex: number; endIndex: number }) => {
+      if (timelineAnchors.length === 0) {
+        setActiveTimelineIndex(-1);
+        return;
+      }
+      // 找到第一个在可见范围内的用户消息锚点
+      const firstVisible = timelineAnchors.find(
+        (a) => a.messageIndex >= range.startIndex && a.messageIndex <= range.endIndex,
+      );
+      if (firstVisible) {
+        const anchorIdx = timelineAnchors.indexOf(firstVisible);
+        setActiveTimelineIndex(anchorIdx);
+      }
+    },
+    [timelineAnchors],
+  );
 
-    // 切换到 chat view 时强制滚动到底部
-    isAutoScrollEnabledRef.current = true;
-    const section = chatSectionRef.current;
-    if (section) {
-      section.scrollTop = section.scrollHeight;
+  const handleScrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' });
+  }, []);
+
+  // 跳转到指定锚点 (timeline 点击) — 使用 Virtuoso scrollToIndex
+  const jumpToAnchor = useCallback((groupId: string) => {
+    const anchor = timelineAnchors.find((a) => a.id === groupId);
+    if (!anchor || !virtuosoRef.current) return;
+    virtuosoRef.current.scrollToIndex({ index: anchor.messageIndex, align: 'start', behavior: 'smooth' });
+
+    // 滚动到位后高亮动画
+    setTimeout(() => {
+      const el = document.getElementById(`turn-${groupId}`);
+      if (!el) return;
+      document.querySelectorAll('.chat-turn').forEach((turn) => turn.classList.remove('target-highlight'));
+      void (el as HTMLElement).offsetWidth;
+      el.classList.add('target-highlight');
+    }, 600);
+  }, [timelineAnchors]);
+
+  // 切换到 chat view 时滚动到底部
+  useEffect(() => {
+    if (view === 'chat') {
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST' });
     }
   }, [view]);
-
-  // Scrollspy: 用 IntersectionObserver 追踪哪个 user-prompt 可见
-  useEffect(() => {
-    if (view !== 'chat' || timelineAnchors.length === 0) {
-      setActiveTimelineIndex(-1);
-      return;
-    }
-
-    const container = chatSectionRef.current;
-    if (!container) return;
-
-    const targets = timelineAnchors
-      .map((anchor) => document.getElementById(`turn-${anchor.id}`))
-      .filter(Boolean);
-
-    if (targets.length === 0) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const idx = timelineAnchors.findIndex((a) => `turn-${a.id}` === entry.target.id);
-            if (idx >= 0) setActiveTimelineIndex(idx);
-            // 只跟踪第一个进入视口的即可
-            break;
-          }
-        }
-      },
-      { root: container, rootMargin: '-15% 0px -70% 0px', threshold: 0 },
-    );
-
-    targets.forEach((el) => observer.observe(el!));
-    return () => observer.disconnect();
-  }, [view, timelineAnchors, activeSession?.messages]);
 
   const applyStorageSettings = (storage: StorageSettings) => {
     setStoragePath(storage.dataRoot);
@@ -660,6 +934,7 @@ export function App() {
     // 优先使用缓存（保留流式状态）
     const cached = sessionCacheRef.current.get(sessionId);
     if (cached) {
+      rememberStreamItemOverlay(sessionId, cached);
       setActiveSession(cached);
       setSessionError('');
       if (cached.messages.length > 0) {
@@ -675,10 +950,20 @@ export function App() {
 
     try {
       const session = await readSessionFromStorage(sessionId);
-      if (session) {
-        sessionCacheRef.current.set(sessionId, session);
+      const mergedSession = session
+        ? mergeStreamItemsIntoStoredSession(
+            session,
+            sessionCacheRef.current.get(sessionId),
+            undefined,
+            undefined,
+            streamItemOverlayRef.current.get(sessionId),
+          )
+        : null;
+      if (mergedSession) {
+        sessionCacheRef.current.set(sessionId, mergedSession);
+        rememberStreamItemOverlay(sessionId, mergedSession);
       }
-      setActiveSession(session);
+      setActiveSession(mergedSession);
     } catch (error) {
       setActiveSession(null);
       setSessionError(error instanceof Error ? error.message : String(error));
@@ -751,67 +1036,133 @@ export function App() {
     setTheme((currentTheme) => (currentTheme === 'dark' ? 'light' : 'dark'));
   };
 
-  const chooseStoragePath = () => {
-    const nextPath = 'D:\\OtheroneData';
-    setStorageDraft(nextPath);
-    setMigrationStatus('已选择新的数据目录，保存后会迁移 localfile 与 SQLite 数据。');
+  const chooseStoragePath = async () => {
+    try {
+      const nextPath = await selectDirectoryFromSystem();
+      if (!nextPath) {
+        setStorageRootStatus('dataRoot', '已取消选择目录。');
+        return;
+      }
+
+      setStorageDraft(nextPath);
+      setStorageRootStatus('dataRoot', '已选择新的数据目录，保存后会复制 SQLite 与插件数据。');
+    } catch (error) {
+      setStorageRootStatus('dataRoot', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const saveStoragePath = () => {
-    void migrateStorageSettings();
-    return;
-    setStoragePath(storageDraft);
-    setMigrationStatus(`已保存数据目录：${storageDraft}`);
+    requestStorageMigration('dataRoot');
   };
 
-  const chooseArtifactPath = () => {
-    const nextPath = 'D:\\OtheroneData\\artifacts';
-    setArtifactDraft(nextPath);
+  const chooseArtifactPath = async () => {
+    try {
+      const nextPath = await selectDirectoryFromSystem();
+      if (!nextPath) {
+        setStorageRootStatus('artifactRoot', '已取消选择目录。');
+        return;
+      }
+
+      setArtifactDraft(nextPath);
+      setStorageRootStatus('artifactRoot', '已选择新的产物目录，保存后会复制现有产物目录。');
+    } catch (error) {
+      setStorageRootStatus('artifactRoot', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const saveArtifactPath = () => {
-    void migrateStorageSettings();
-    return;
-    setArtifactPath(artifactDraft);
+    requestStorageMigration('artifactRoot');
   };
 
-  const chooseDialogueDataPath = () => {
-    const nextPath = 'D:\\OtheroneData\\dialogues';
-    setDialogueDataDraft(nextPath);
+  const chooseDialogueDataPath = async () => {
+    try {
+      const nextPath = await selectDirectoryFromSystem();
+      if (!nextPath) {
+        setStorageRootStatus('dialogueRoot', '已取消选择目录。');
+        return;
+      }
+
+      setDialogueDataDraft(nextPath);
+      setStorageRootStatus('dialogueRoot', '已选择新的对话目录，保存后会复制 otherone localfile 数据。');
+    } catch (error) {
+      setStorageRootStatus('dialogueRoot', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const saveDialogueDataPath = () => {
-    void migrateStorageSettings();
-    return;
-    setDialogueDataPath(dialogueDataDraft);
+    requestStorageMigration('dialogueRoot');
   };
 
-  const migrateStorageSettings = async () => {
-    const confirmed = window.confirm(
-      '迁移会把当前受管数据复制到新目录，校验成功后删除旧目录中的受管数据。迁移或清理过程中如果出现数据丢失，应用无法恢复旧数据。请先手动备份当前数据目录，再继续。',
-    );
+  const openStorageDirectory = async (key: StorageRootKey, path: string) => {
+    try {
+      const opened = await openDirectoryInSystem(path);
+      setStorageRootStatus(key, opened ? '已打开目录。' : '当前环境无法打开系统目录。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStorageRootStatus(key, `打开目录失败：${message}`);
+    }
+  };
 
-    if (!confirmed) {
-      setMigrationStatus('已取消迁移。');
+  const requestStorageMigration = (targetKey: StorageRootKey) => {
+    const nextStorage = {
+      dataRoot: storageDraft,
+      artifactRoot: artifactDraft,
+      dialogueRoot: dialogueDataDraft,
+    };
+    const changedKeys: StorageRootKey[] = [];
+
+    if (nextStorage.dataRoot !== storagePath) {
+      changedKeys.push('dataRoot');
+    }
+
+    if (nextStorage.artifactRoot !== artifactPath) {
+      changedKeys.push('artifactRoot');
+    }
+
+    if (nextStorage.dialogueRoot !== dialogueDataPath) {
+      changedKeys.push('dialogueRoot');
+    }
+
+    if (changedKeys.length === 0) {
+      setStorageRootStatus(targetKey, '路径未变化，无需迁移。');
       return;
     }
 
+    setPendingStorageMigration({ changedKeys, storage: nextStorage, targetKey });
+  };
+
+  const cancelStorageMigration = () => {
+    const targetKey = pendingStorageMigration?.targetKey;
+    setPendingStorageMigration(null);
+
+    if (targetKey) {
+      setStorageRootStatus(targetKey, '已取消迁移。');
+    }
+  };
+
+  const confirmStorageMigration = () => {
+    const pendingMigration = pendingStorageMigration;
+    setPendingStorageMigration(null);
+
+    if (!pendingMigration) {
+      return;
+    }
+
+    void migrateStorageSettings(pendingMigration.storage, pendingMigration.changedKeys);
+  };
+
+  const migrateStorageSettings = async (nextStorage: StorageSettings, changedKeys: StorageRootKey[]) => {
     setIsMigratingStorage(true);
-    setMigrationStatus('正在迁移存储数据，请不要关闭应用。');
+    setChangedStorageRootStatuses(changedKeys, '正在复制并校验存储数据，请不要关闭应用。');
 
     try {
-      const nextStorage = {
-        dataRoot: storageDraft,
-        artifactRoot: artifactDraft,
-        dialogueRoot: dialogueDataDraft,
-      };
       const settings = await migrateStorageSettingsToStorage(nextStorage);
 
       applyStorageSettings(settings?.storage ?? nextStorage);
-      setMigrationStatus('存储迁移完成，旧受管数据已清理。');
+      setChangedStorageRootStatuses(changedKeys, '存储迁移完成，已切换到新目录。旧目录已保留，可确认无误后手动清理。');
       setSessions(await loadSessionsFromStorage());
     } catch (error) {
-      setMigrationStatus(error instanceof Error ? error.message : String(error));
+      setChangedStorageRootStatuses(changedKeys, error instanceof Error ? error.message : String(error));
     } finally {
       setIsMigratingStorage(false);
     }
@@ -865,6 +1216,108 @@ export function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
+
+  const handleOpenArtifactLocation = useCallback(
+    async (item: FileArtifact) => {
+      if (!item.path.trim()) {
+        pushToast('warn', '无法定位文件', '当前文件路径为空。');
+        return;
+      }
+
+      try {
+        const opened = await revealFileInSystem(item.path);
+        if (!opened) {
+          pushToast('warn', '无法定位文件', '当前环境无法打开系统文件管理器。');
+        }
+      } catch (error) {
+        pushToast('error', '定位文件失败', error instanceof Error ? error.message : String(error));
+      }
+    },
+    [pushToast],
+  );
+
+  const applyFileArtifact = useCallback((record: FileArtifactRecord) => {
+    const artifact = artifactRecordToFileArtifact(record);
+    const upsert = (current: FileArtifact[]) => [artifact, ...current.filter((item) => item.id !== artifact.id)];
+
+    if (record.action === 'edited') {
+      setEditedFiles(upsert);
+      return;
+    }
+
+    if (record.action === 'deleted') {
+      setDeletedFiles(upsert);
+      return;
+    }
+
+    setAddedFiles(upsert);
+  }, []);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id ?? null;
+  }, [activeSession?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const sessionId = activeSession?.id;
+
+    if (!sessionId) {
+      setEditedFiles([]);
+      setDeletedFiles([]);
+      setAddedFiles([]);
+      return;
+    }
+    const currentSessionId = sessionId;
+
+    async function loadArtifacts() {
+      try {
+        const artifacts = await listFileArtifacts(currentSessionId);
+
+        if (cancelled) {
+          return;
+        }
+
+        setEditedFiles(artifacts.filter((item) => item.action === 'edited').map(artifactRecordToFileArtifact));
+        setDeletedFiles(artifacts.filter((item) => item.action === 'deleted').map(artifactRecordToFileArtifact));
+        setAddedFiles(artifacts.filter((item) => item.action === 'added').map(artifactRecordToFileArtifact));
+      } catch (error) {
+        if (!cancelled) {
+          pushToast('error', '读取产出面板失败', error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+
+    void loadArtifacts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSession?.id, pushToast]);
+
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+
+    void listenToFileArtifacts((artifact) => {
+      if (artifact.sessionId !== activeSessionIdRef.current) {
+        return;
+      }
+
+      applyFileArtifact(artifact);
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+
+      cleanup = unlisten;
+    });
+
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, [applyFileArtifact]);
 
   const resizePrompt = () => {
     const textarea = promptRef.current;
@@ -940,11 +1393,11 @@ export function App() {
     });
   };
 
-  // 从 current streaming state 中收集 thinking items，
-  // 然后合并到 reloaded session 的最后一个 AI group 中。
+  // 从 current streaming state 中收集完整 item 顺序，
+  // 然后按这个顺序把 thinking 合并回 reloaded session。
   // 因为 otherone-agent 框架不单独持久化 thinking delta，只存最终 AI 文本 entry。
   const refreshSessionFromStorage = useCallback(
-    async (sessionId: string, pendingThinkingItems?: ThinkingMessageItem[]) => {
+    async (sessionId: string, pendingStreamItems?: MessageItem[]) => {
       try {
         const [session, storedSessions] = await Promise.all([
           readSessionFromStorage(sessionId),
@@ -956,159 +1409,177 @@ export function App() {
           return;
         }
 
+        const streamGroupId = activeStreamGroupIdRef.current.get(sessionId);
+        const cachedSession = sessionCacheRef.current.get(sessionId);
+        const streamItems = pendingStreamItems ?? completeStreamItemsFromGroup(cachedSession, streamGroupId);
+        const streamItemOverlay = mergeStreamItemOverlays(
+          streamItemOverlayRef.current.get(sessionId),
+          collectStreamItemOverlay(cachedSession),
+        );
+        const mergedSession = mergeStreamItemsIntoStoredSession(
+          session,
+          cachedSession,
+          streamGroupId,
+          streamItems,
+          streamItemOverlay,
+        );
+
+        sessionCacheRef.current.set(sessionId, mergedSession);
+        rememberStreamItemOverlay(sessionId, mergedSession);
         setActiveSession((current) => {
-          // 从 current state（或传入的 pending items）收集 thinking
-          const thinkingItems: ThinkingMessageItem[] = pendingThinkingItems ?? (() => {
-            if (!current || current.id !== sessionId) return [];
-            const items: ThinkingMessageItem[] = [];
-            for (const group of current.messages) {
-              for (const item of group.items) {
-                if (item.type === 'thinking' && item.content) {
-                  items.push({
-                    ...(item as ThinkingMessageItem),
-                    status: 'completed' as const,
-                    label: '深度思考已完成',
-                  });
-                }
-              }
-            }
-            return items;
-          })();
-
-          if (thinkingItems.length === 0) return session;
-
-          // 把 thinking items 插入到最后一个 AI group 的最前面
-          const aiIndexes: number[] = [];
-          session.messages.forEach((g, i) => { if (g.role === 'ai') aiIndexes.push(i); });
-          const lastAiIdx = aiIndexes.length > 0 ? aiIndexes[aiIndexes.length - 1] : -1;
-
-          if (lastAiIdx < 0) return session;
-
-          return {
-            ...session,
-            messages: session.messages.map((group, idx) => {
-              if (idx !== lastAiIdx) return group;
-              const nonThinkingItems = group.items.filter((i) => i.type !== 'thinking');
-              return { ...group, items: [...thinkingItems, ...nonThinkingItems] };
-            }),
-          };
+          if (!current || current.id !== sessionId) return current;
+          return mergedSession;
         });
 
         setSessions(storedSessions);
-        setActiveItem(sessionId);
       } catch (error) {
         setSessionError(error instanceof Error ? error.message : String(error));
       }
     },
-    [],
+    [rememberStreamItemOverlay],
   );
 
-  const updateStreamingMessage = (event: ChatStreamEvent) => {
-    setActiveSession((current) => {
-      if (!current || current.id !== event.sessionId) {
-        return current;
-      }
+  // ---- 流式事件缓冲区 ----
+  // 将高频 delta 事件缓冲到 rAF，一次性批量 apply，
+  // 将 state 更新从 30-50 次/秒降至 ~10 次/秒。
+  const streamBufferScheduledRef = useRef(false);
+  const streamBufferSessionRef = useRef<string | null>(null);
 
-      const messages = current.messages.map((group) => {
-        if (group.id !== `stream-ai-${event.sessionId}`) {
-          return group;
-        }
+  const applyStreamEventsToSession = useCallback((sessionId: string, events: ChatStreamEvent[]) => {
+    if (events.length === 0) return null;
 
-        return {
-          ...group,
-          items: group.items.map((item) => {
-            if (item.type !== 'text') {
-              return item;
-            }
+    const cached = sessionCacheRef.current.get(sessionId);
+    let updatedSession: SessionDetail | null = null;
 
-            if (event.eventType === 'assistant_delta') {
-              return { ...item, content: `${item.content}${event.content}`, status: 'running' as const };
-            }
-
-            if (event.eventType === 'complete') {
-              return { ...item, content: item.content || event.content, status: 'completed' as const };
-            }
-
-            if (event.eventType === 'error') {
-              return {
-                ...item,
-                content: item.content || event.error || '对话执行失败。',
-                status: 'completed' as const,
-              };
-            }
-
-            return item;
-          }),
-        };
-      });
-
-      return { ...current, messages };
-    });
-  };
-
-  const updateStreamingMessageV2 = useCallback((event: ChatStreamEvent) => {
-    const streamEvent =
-      event.eventType === 'thinking'
-        ? { ...event, eventType: 'assistant_thinking_delta' as const }
-        : event;
-
-    if (
-      streamEvent.eventType !== 'assistant_delta' &&
-      streamEvent.eventType !== 'assistant_thinking_delta' &&
-      streamEvent.eventType !== 'tool_call' &&
-      streamEvent.eventType !== 'complete' &&
-      streamEvent.eventType !== 'error' &&
-      streamEvent.eventType !== 'cancelled'
-    ) {
-      return;
-    }
-
-    const sid = streamEvent.sessionId;
-
-    // 始终更新 session 缓存
-    const cached = sessionCacheRef.current.get(sid);
     if (cached) {
-      const updated = applyStreamEventToSession(cached, streamEvent, streamIterRef.current);
-      sessionCacheRef.current.set(sid, updated);
+      updatedSession = cached;
+      for (const evt of events) {
+        updatedSession = applyStreamEventToSession(
+          updatedSession,
+          evt,
+          streamIterRef.current,
+          activeStreamGroupIdRef.current,
+        );
+      }
+      sessionCacheRef.current.set(sessionId, updatedSession);
+      rememberStreamItemOverlay(sessionId, updatedSession);
     }
 
-    // 只有当前展示的 session 才更新 activeSession（触发 rerender）
     setActiveSession((current) => {
-      if (!current || current.id !== sid) return current;
-      return applyStreamEventToSession(current, streamEvent, streamIterRef.current);
+      if (!current || current.id !== sessionId) return current;
+      if (updatedSession) return updatedSession;
+
+      let updatedCurrent = current;
+      for (const evt of events) {
+        updatedCurrent = applyStreamEventToSession(
+          updatedCurrent,
+          evt,
+          streamIterRef.current,
+          activeStreamGroupIdRef.current,
+        );
+      }
+      sessionCacheRef.current.set(sessionId, updatedCurrent);
+      rememberStreamItemOverlay(sessionId, updatedCurrent);
+      return updatedCurrent;
+    });
+
+    return updatedSession;
+  }, [rememberStreamItemOverlay]);
+
+  const flushStreamBuffer = useCallback(() => {
+    streamBufferScheduledRef.current = false;
+    const sid = streamBufferSessionRef.current;
+    if (!sid) return;
+
+    const events = pendingStreamEventsRef.current.get(sid);
+    if (!events || events.length === 0) return;
+    pendingStreamEventsRef.current.set(sid, []);
+
+    // 批量 apply 所有缓冲事件 → 仅触发一次 state 更新
+    applyStreamEventsToSession(sid, events);
+  }, [applyStreamEventsToSession]);
+
+  // 稳定引用：rAF 回调中用 ref 获取最新 flush 函数
+  const flushStreamBufferRef = useRef(flushStreamBuffer);
+  flushStreamBufferRef.current = flushStreamBuffer;
+
+  const scheduleStreamFlush = useCallback((sessionId: string) => {
+    streamBufferSessionRef.current = sessionId;
+    if (streamBufferScheduledRef.current) return; // 已经排期了
+    streamBufferScheduledRef.current = true;
+    requestAnimationFrame(() => {
+      flushStreamBufferRef.current();
     });
   }, []);
 
+  /**
+   * 核心：流式事件处理器。
+   * - delta 类事件 → 入缓冲，rAF 批量 flush
+   * - terminal 事件 (complete/error/cancelled) → 立即 flush + 处理
+   */
   const handleChatStreamEvent = useCallback(
     (event: ChatStreamEvent) => {
-      if (
+      let completedStreamItems: MessageItem[] | undefined;
+      const isDelta =
         event.eventType === 'assistant_delta' ||
         event.eventType === 'assistant_thinking_delta' ||
         event.eventType === 'thinking' ||
-        event.eventType === 'tool_call' ||
+        event.eventType === 'tool_call';
+
+      const isTerminal =
         event.eventType === 'complete' ||
         event.eventType === 'error' ||
-        event.eventType === 'cancelled'
-      ) {
-        updateStreamingMessageV2(event);
+        event.eventType === 'cancelled';
+
+      if (isDelta) {
+        // 入缓冲
+        const sid = event.sessionId;
+        const buf = pendingStreamEventsRef.current.get(sid) ?? [];
+        buf.push(event);
+        pendingStreamEventsRef.current.set(sid, buf);
+        scheduleStreamFlush(sid);
+        return;
       }
 
+      if (isTerminal) {
+        // terminal 事件先 flush 缓冲区，再 apply 自身
+        const sid = event.sessionId;
+        const activeStreamGroupId = activeStreamGroupIdRef.current.get(sid);
+        const buf = pendingStreamEventsRef.current.get(sid);
+        const events = [...(buf ?? []), event];
+        pendingStreamEventsRef.current.set(sid, []);
+        const updatedSession = applyStreamEventsToSession(sid, events);
+        completedStreamItems = completeStreamItemsFromGroup(updatedSession, activeStreamGroupId);
+        streamBufferScheduledRef.current = false;
+      }
+
+      // 终端后处理
       if (event.eventType === 'complete') {
         streamingSessionIdsRef.current.delete(event.sessionId);
-        void refreshSessionFromStorage(event.sessionId);
+        pendingStreamEventsRef.current.delete(event.sessionId);
+        const completedStreamGroupId = activeStreamGroupIdRef.current.get(event.sessionId);
+        void refreshSessionFromStorage(event.sessionId, completedStreamItems).finally(() => {
+          if (activeStreamGroupIdRef.current.get(event.sessionId) === completedStreamGroupId) {
+            activeStreamGroupIdRef.current.delete(event.sessionId);
+          }
+        });
       }
 
       if (event.eventType === 'error') {
         streamingSessionIdsRef.current.delete(event.sessionId);
+        activeStreamGroupIdRef.current.delete(event.sessionId);
+        pendingStreamEventsRef.current.delete(event.sessionId);
         pushToast('error', '对话执行失败', event.error ?? event.content);
       }
 
       if (event.eventType === 'cancelled') {
         streamingSessionIdsRef.current.delete(event.sessionId);
+        activeStreamGroupIdRef.current.delete(event.sessionId);
+        pendingStreamEventsRef.current.delete(event.sessionId);
         pushToast('info', '对话已被终止');
       }
     },
-    [pushToast, refreshSessionFromStorage, updateStreamingMessageV2],
+    [applyStreamEventsToSession, pushToast, refreshSessionFromStorage, scheduleStreamFlush],
   );
 
   useEffect(() => {
@@ -1129,10 +1600,161 @@ export function App() {
     };
   }, [handleChatStreamEvent]);
 
+  useEffect(() => {
+    return () => {
+      pendingChatSendsRef.current.forEach((batch) => {
+        if (batch.timer) {
+          clearTimeout(batch.timer);
+        }
+      });
+      pendingChatSendsRef.current.clear();
+    };
+  }, []);
+
+  const restorePendingChatSend = (batch: PendingChatSend) => {
+    const { sessionId } = batch;
+    const lastPrompt = batch.prompts[batch.prompts.length - 1] ?? '';
+
+    streamingSessionIdsRef.current.delete(sessionId);
+    activeStreamGroupIdRef.current.delete(sessionId);
+    streamIterRef.current.delete(sessionId);
+    pendingStreamEventsRef.current.delete(sessionId);
+
+    if (batch.previousSession) {
+      sessionCacheRef.current.set(sessionId, batch.previousSession);
+    } else {
+      sessionCacheRef.current.delete(sessionId);
+      streamItemOverlayRef.current.delete(sessionId);
+    }
+
+    setActiveSession((current) => {
+      if (current?.id !== sessionId) return current;
+      return batch.previousSession;
+    });
+
+    setSessions((current) => {
+      const withoutPending = current.filter((session) => session.id !== sessionId);
+      if (!batch.previousSummary) return withoutPending;
+
+      const insertAt = Math.min(Math.max(batch.previousSummaryIndex, 0), withoutPending.length);
+      return [
+        ...withoutPending.slice(0, insertAt),
+        batch.previousSummary,
+        ...withoutPending.slice(insertAt),
+      ];
+    });
+
+    setMessage(lastPrompt);
+    setPromptPanelOpen(false);
+    requestAnimationFrame(resizePrompt);
+
+    if (!batch.previousSession) {
+      setView('new');
+      setActiveItem('');
+    }
+  };
+
+  const startPendingChatSend = async (batch: PendingChatSend) => {
+    const prompt = batch.prompts.join('\n\n');
+
+    try {
+      await sendChatMessageToStorage({
+        sessionId: batch.sessionId,
+        modelId: batch.modelId,
+        prompt,
+        reasoningEffort: batch.reasoningEffort,
+        contextCompressionEnabled: batch.contextCompressionEnabled,
+        branchModeEnabled: batch.branchModeEnabled,
+        targetModeEnabled: batch.targetModeEnabled,
+      });
+    } catch (error) {
+      streamingSessionIdsRef.current.delete(batch.sessionId);
+      handleChatStreamEvent({
+        sessionId: batch.sessionId,
+        eventType: 'error',
+        content: '',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const schedulePendingChatSend = (batch: PendingChatSend) => {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+
+    batch.timer = setTimeout(() => {
+      const current = pendingChatSendsRef.current.get(batch.sessionId);
+      if (current !== batch) return;
+
+      pendingChatSendsRef.current.delete(batch.sessionId);
+      batch.timer = null;
+      void startPendingChatSend(batch);
+    }, SEND_REMORSE_DELAY_MS);
+  };
+
+  const cancelPendingChatSend = (sessionId: string) => {
+    const batch = pendingChatSendsRef.current.get(sessionId);
+    if (!batch) return false;
+
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      batch.timer = null;
+    }
+    pendingChatSendsRef.current.delete(sessionId);
+    restorePendingChatSend(batch);
+    return true;
+  };
+
+  const appendPromptToPendingChatSend = (batch: PendingChatSend, prompt: string) => {
+    const createdAt = new Date().toISOString();
+    const { userGroupId, userGroup } = createOptimisticUserGroup(batch.sessionId, prompt, createdAt);
+
+    batch.prompts.push(prompt);
+    batch.userGroupIds.push(userGroupId);
+
+    const cachedSession = sessionCacheRef.current.get(batch.sessionId);
+    if (cachedSession) {
+      const updatedSession = insertUserGroupBeforeAiGroup(cachedSession, userGroup, batch.aiGroupId, createdAt);
+      sessionCacheRef.current.set(batch.sessionId, updatedSession);
+      setActiveSession((current) => (current?.id === batch.sessionId ? updatedSession : current));
+    }
+
+    setSessions((current) => {
+      const existing = current.find((session) => session.id === batch.sessionId);
+      if (!existing) {
+        return [
+          {
+            id: batch.sessionId,
+            title: prompt.slice(0, 24) || 'New chat',
+            createdAt,
+            updatedAt: createdAt,
+            lastMessage: prompt,
+            messageCount: 1,
+            pinned: false,
+            archived: false,
+          },
+          ...current,
+        ];
+      }
+
+      return [
+        { ...existing, updatedAt: createdAt, lastMessage: prompt, messageCount: existing.messageCount + 1 },
+        ...current.filter((session) => session.id !== batch.sessionId),
+      ];
+    });
+
+    setMessage('');
+    setPromptPanelOpen(false);
+    requestAnimationFrame(resizePrompt);
+    schedulePendingChatSend(batch);
+  };
+
   const handleCancelMessage = async () => {
     if (!activeSession) return;
 
     const sessionId = activeSession.id;
+    if (cancelPendingChatSend(sessionId)) return;
     // 立即在前端标记流式结束
     streamingSessionIdsRef.current.delete(sessionId);
 
@@ -1152,61 +1774,51 @@ export function App() {
     }
 
     const sessionId = activeSession?.id ?? createClientSessionId();
+    const pendingBatch = pendingChatSendsRef.current.get(sessionId);
+    if (pendingBatch) {
+      appendPromptToPendingChatSend(pendingBatch, prompt);
+      return;
+    }
 
     // 检查目标 session 是否已在流式传输中
     if (streamingSessionIdsRef.current.has(sessionId)) return;
 
     const createdAt = new Date().toISOString();
-    const userGroup: MessageGroup = {
-      id: `stream-user-${sessionId}-${Date.now()}`,
-      role: 'user',
-      items: [
-        {
-          id: `stream-user-item-${sessionId}`,
-          type: 'text',
-          content: prompt,
-          status: 'completed',
-          entryId: '',
-          sourceRole: 'user',
-          createdAt,
-        },
-      ],
-    };
-    const aiGroup: MessageGroup = {
-      id: streamAiGroupId(sessionId),
-      role: 'ai',
-      items: [
-        {
-          id: streamTextId(sessionId, 0),
-          type: 'text',
-          content: '',
-          status: 'running',
-          entryId: '',
-          sourceRole: 'assistant',
-          createdAt,
-        },
-      ],
-    };
+    const { turnId, userGroupId, userGroup } = createOptimisticUserGroup(sessionId, prompt, createdAt);
+    const aiGroupId = streamAiGroupId(sessionId, turnId);
+    const aiGroup = createOptimisticAiGroup(aiGroupId, createdAt);
 
+    const baseSession: SessionDetail = {
+      id: sessionId,
+      title: prompt.slice(0, 24) || '新对话',
+      createdAt,
+      updatedAt: createdAt,
+      messages: [userGroup, aiGroup],
+    };
+    const cachedSessionBeforeSend = sessionCacheRef.current.get(sessionId);
+    const previousSession = cachedSessionBeforeSend ?? activeSession;
+    const previousSummaryIndex = sessions.findIndex((session) => session.id === sessionId);
+    const previousSummary = previousSummaryIndex >= 0 ? sessions[previousSummaryIndex] : null;
+    const cachedSession = cachedSessionBeforeSend
+      ? {
+          ...cachedSessionBeforeSend,
+          updatedAt: createdAt,
+          messages: [...cachedSessionBeforeSend.messages, userGroup, aiGroup],
+        }
+      : baseSession;
+
+    sessionCacheRef.current.set(sessionId, cachedSession);
     setActiveSession((current) => {
-      const base = {
-        id: sessionId,
-        title: prompt.slice(0, 24) || '新对话',
-        createdAt,
-        updatedAt: createdAt,
-        messages: [userGroup, aiGroup],
-      };
-      // 同步到缓存
-      sessionCacheRef.current.set(sessionId, {
-        ...base,
-        messages: current?.id === sessionId
-          ? [...current.messages, userGroup, aiGroup]
-          : base.messages,
-      });
       if (current?.id === sessionId) {
-        return { ...current, messages: [...current.messages, userGroup, aiGroup] };
+        const updatedSession = {
+          ...current,
+          updatedAt: createdAt,
+          messages: [...current.messages, userGroup, aiGroup],
+        };
+        sessionCacheRef.current.set(sessionId, updatedSession);
+        return updatedSession;
       }
-      return base;
+      return cachedSession;
     });
     setSessions((current) => {
       const nextSummary: SessionSummary = {
@@ -1237,32 +1849,30 @@ export function App() {
 
     // 标记为目标 session 正在流式传输
     streamingSessionIdsRef.current.add(sessionId);
+    activeStreamGroupIdRef.current.set(sessionId, aiGroupId);
     streamIterRef.current.set(sessionId, 0);
 
-    try {
-      await sendChatMessageToStorage({
-        sessionId,
-        modelId,
-        prompt,
-        reasoningEffort,
-        contextCompressionEnabled,
-        branchModeEnabled,
-        targetModeEnabled,
-      });
-    } catch (error) {
-      streamingSessionIdsRef.current.delete(sessionId);
-      handleChatStreamEvent({
-        sessionId,
-        eventType: 'error',
-        content: '',
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const batch: PendingChatSend = {
+      sessionId,
+      aiGroupId,
+      userGroupIds: [userGroupId],
+      prompts: [prompt],
+      timer: null,
+      previousSession: previousSession ? { ...previousSession, messages: [...previousSession.messages] } : null,
+      previousSummary,
+      previousSummaryIndex,
+      modelId,
+      reasoningEffort,
+      contextCompressionEnabled,
+      branchModeEnabled,
+      targetModeEnabled,
+    };
+
+    pendingChatSendsRef.current.set(sessionId, batch);
+    schedulePendingChatSend(batch);
   };
 
-  const isCurrentSessionStreaming = activeSession != null && streamingSessionIdsRef.current.has(activeSession.id);
-
-  const showChatUi = view !== 'settings' && view !== 'workflow' && view !== 'plugins';
+  const showChatUi = view !== 'settings' && view !== 'workflow' && view !== 'plugins' && view !== 'weixinClawbot';
   const currentModelValue = selectedModelId || selectorOptions[0].value;
   const pinnedSessions = sessions.filter((session) => session.pinned);
   const regularSessions = sessions.filter((session) => !session.pinned);
@@ -1297,6 +1907,13 @@ export function App() {
             <SidebarItem icon={<Network style={iconSize} />} label="工作流" compact={sidebarCollapsed} onClick={() => switchView('workflow')} />
             <SidebarItem icon={<Blocks style={iconSize} />} label="插件管理" compact={sidebarCollapsed} onClick={() => switchView('plugins')} />
             <SidebarItem icon={<SlidersHorizontal style={iconSize} />} label="个性化" compact={sidebarCollapsed} />
+            <SidebarItem
+              active={activeItem === 'weixinClawbot'}
+              icon={<BotMessageSquare style={iconSize} />}
+              label="微信 ClawBot"
+              compact={sidebarCollapsed}
+              onClick={() => switchView('weixinClawbot', 'weixinClawbot')}
+            />
           </div>
 
           <div className="nav-history">
@@ -1416,19 +2033,20 @@ export function App() {
 
               <section
                 id="view-chat"
-                ref={chatSectionRef}
                 className={`view-container chat-history-view ${view === 'chat' ? 'active' : ''}`}
-                onScroll={updateScrollState}
               >
                 {isLoadingSessionDetail ? (
                   <MessagePanel messages={[]} emptyText="正在读取会话消息..." />
                 ) : (
                   <MessagePanel
-                    messages={activeSession?.messages ?? []}
+                    ref={virtuosoRef}
+                    messages={displayMessages}
                     emptyText={sessionError || (activeSession ? '这个会话还没有消息。' : '请选择一个本地会话。')}
+                    isStreaming={isAiStreaming}
+                    onBottomStateChange={handleBottomStateChange}
+                    onRangeChanged={handleRangeChanged}
                   />
                 )}
-                <div className="chat-scroll-anchor" />
               </section>
 
               {/* Timeline 导航 — 用户向上滚动时从右侧滑入 */}
@@ -1654,7 +2272,7 @@ export function App() {
               <>
                 <div className="settings-title">存储配置</div>
                 <div className="settings-warning">
-                  迁移会复制当前受管数据并在校验成功后删除旧目录中的受管数据。迁移或清理过程中如果出现数据丢失，应用无法恢复旧数据，请先手动备份当前目录。
+                  迁移会复制当前受管数据并在校验成功后切换到新目录。旧目录不会自动删除，请确认新目录数据可用后再手动清理旧数据。
                 </div>
 
                 <div className="setting-item setting-item-column">
@@ -1665,15 +2283,22 @@ export function App() {
                   <div className="storage-path-panel">
                     <input
                       className="storage-path-input"
+                      readOnly
+                      title={storageDraft}
                       value={storageDraft}
-                      onChange={(event) => {
-                        setStorageDraft(event.target.value);
-                        setMigrationStatus('路径已修改，保存后会触发数据迁移。');
-                      }}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" onClick={chooseStoragePath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseStoragePath()}>
                         选择目录
+                      </button>
+                      <button
+                        className="setting-btn"
+                        type="button"
+                        disabled={isMigratingStorage || !storageDraft.trim()}
+                        onClick={() => void openStorageDirectory('dataRoot', storageDraft)}
+                      >
+                        <FolderOpen style={iconSize} />
+                        打开目录
                       </button>
                       <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveStoragePath}>
                         {isMigratingStorage ? '迁移中' : '保存并迁移'}
@@ -1682,7 +2307,7 @@ export function App() {
                     <small className="storage-path-status">
                       当前路径：{storagePath}
                       <br />
-                      {migrationStatus}
+                      {storageMigrationStatus}
                     </small>
                   </div>
                 </div>
@@ -1695,19 +2320,31 @@ export function App() {
                   <div className="storage-path-panel">
                     <input
                       className="storage-path-input"
+                      readOnly
+                      title={artifactDraft}
                       value={artifactDraft}
-                      onChange={(event) => setArtifactDraft(event.target.value)}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" onClick={chooseArtifactPath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseArtifactPath()}>
                         选择目录
                       </button>
+                      <button
+                        className="setting-btn"
+                        type="button"
+                        disabled={isMigratingStorage || !artifactDraft.trim()}
+                        onClick={() => void openStorageDirectory('artifactRoot', artifactDraft)}
+                      >
+                        <FolderOpen style={iconSize} />
+                        打开目录
+                      </button>
                       <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveArtifactPath}>
-                        {isMigratingStorage ? '迁移中' : '保存'}
+                        {isMigratingStorage ? '迁移中' : '保存并迁移'}
                       </button>
                     </div>
                     <small className="storage-path-status">
                       当前路径：{artifactPath}
+                      <br />
+                      {artifactMigrationStatus}
                     </small>
                   </div>
                 </div>
@@ -1720,19 +2357,31 @@ export function App() {
                   <div className="storage-path-panel">
                     <input
                       className="storage-path-input"
+                      readOnly
+                      title={dialogueDataDraft}
                       value={dialogueDataDraft}
-                      onChange={(event) => setDialogueDataDraft(event.target.value)}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" onClick={chooseDialogueDataPath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseDialogueDataPath()}>
                         选择目录
                       </button>
+                      <button
+                        className="setting-btn"
+                        type="button"
+                        disabled={isMigratingStorage || !dialogueDataDraft.trim()}
+                        onClick={() => void openStorageDirectory('dialogueRoot', dialogueDataDraft)}
+                      >
+                        <FolderOpen style={iconSize} />
+                        打开目录
+                      </button>
                       <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveDialogueDataPath}>
-                        {isMigratingStorage ? '迁移中' : '保存'}
+                        {isMigratingStorage ? '迁移中' : '保存并迁移'}
                       </button>
                     </div>
                     <small className="storage-path-status">
                       当前路径：{dialogueDataPath}
+                      <br />
+                      {dialogueMigrationStatus}
                     </small>
                   </div>
                 </div>
@@ -1770,7 +2419,9 @@ export function App() {
           </div>
         </section>
         ) : view === 'workflow' ? (
-          <WorkflowPage onClose={() => switchView('new')} />
+          <WorkflowPage onClose={() => switchView('new')} onNotice={pushToast} />
+        ) : view === 'weixinClawbot' ? (
+          <WeixinClawbotPage onClose={() => switchView('new')} onNotice={pushToast} />
         ) : (
           <PluginsPage onClose={() => switchView('new')} />
         )}
@@ -1780,10 +2431,21 @@ export function App() {
         addedFiles={addedFiles}
         deletedFiles={deletedFiles}
         editedFiles={editedFiles}
+        onOpenFileLocation={handleOpenArtifactLocation}
         open={artifactsPanelOpen}
       />
 
       <ToastViewport messages={toasts} onDismiss={dismissToast} />
+      <ConfirmDialog
+        open={pendingStorageMigration !== null}
+        title="确认迁移存储数据"
+        description="迁移会把当前受管数据复制到新目录，校验成功后切换到新目录。旧目录不会自动删除，请确认新路径可用后再手动清理旧数据。建议先手动备份当前数据目录，再继续。"
+        confirmLabel="保存并迁移"
+        cancelLabel="取消"
+        tone="warning"
+        onCancel={cancelStorageMigration}
+        onConfirm={confirmStorageMigration}
+      />
       <SearchOverlay
         allArtifacts={allArtifacts}
         open={searchOpen}

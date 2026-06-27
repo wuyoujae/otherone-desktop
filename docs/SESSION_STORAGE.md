@@ -118,9 +118,9 @@ Migration behavior:
 2. Copy managed data to the new roots.
 3. Verify SQLite and localfile JSON after copy.
 4. Save the new paths only after verification succeeds.
-5. Delete old managed data after success.
+5. Preserve old managed data; users can manually delete old directories after verifying the new paths work.
 
-The frontend must warn users to manually back up data first because deleted old data cannot be recovered by the app.
+The frontend must warn users that migration copies data and switches paths, while old data is retained for manual cleanup after verification.
 
 ## Real Chat Stream API
 
@@ -163,6 +163,21 @@ Decision: store editable session metadata in SQLite.
 Implemented table:
 
 - `session_metadata(session_id, title, pinned, archived, created_at, updated_at)`
+
+## File Artifacts
+
+Decision: store app-owned file artifact metadata in SQLite, scoped by framework `session_id`.
+
+Implemented table:
+
+- `file_artifacts(id, session_id, action, tool_name, file_path, file_name, extension, patch_json, created_at)`
+
+Current behavior:
+
+- `edit_file` is wrapped at runtime for each chat session; the Agent-visible tool schema and tool list stay unchanged.
+- Successful `edit_file` results create or update one `edited` artifact per `(session_id, action, file_path)`.
+- The frontend queries artifacts through `list_file_artifacts(session_id)` and listens for `file_artifact_event`.
+- Added and deleted file artifacts are not implemented yet.
 
 ## Failed First Send
 

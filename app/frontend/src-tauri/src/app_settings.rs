@@ -83,7 +83,6 @@ pub fn migrate_storage_settings(
 
     settings.storage = next.clone();
     save_settings(&app, &settings)?;
-    cleanup_previous_storage(&previous, &next)?;
 
     Ok(settings)
 }
@@ -204,13 +203,13 @@ fn normalize_path_or_default(value: &str, default_value: &str) -> Result<String,
 fn copy_managed_data(previous: &StorageSettings, next: &StorageSettings) -> Result<(), String> {
     let previous_data = PathBuf::from(&previous.data_root);
     let next_data = PathBuf::from(&next.data_root);
-    let previous_db = previous_data.join("otherone.sqlite");
-    let next_db = next_data.join("otherone.sqlite");
 
     fs::create_dir_all(&next_data).map_err(|error| error.to_string())?;
-    if previous_db.exists() && previous_db != next_db {
-        copy_file(&previous_db, &next_db)?;
-    }
+    copy_file_if_exists(
+        &previous_data.join("otherone.sqlite"),
+        &next_data.join("otherone.sqlite"),
+    )?;
+    copy_dir_if_exists(&previous_data.join("plugins"), &next_data.join("plugins"))?;
 
     copy_dir_if_exists(
         &PathBuf::from(&previous.dialogue_root),
@@ -253,30 +252,12 @@ fn verify_storage_targets(storage: &StorageSettings) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_previous_storage(
-    previous: &StorageSettings,
-    next: &StorageSettings,
-) -> Result<(), String> {
-    let previous_data = PathBuf::from(&previous.data_root);
-    let next_data = PathBuf::from(&next.data_root);
-    let previous_db = previous_data.join("otherone.sqlite");
-    let next_db = next_data.join("otherone.sqlite");
-
-    if previous_db.exists() && previous_db != next_db {
-        fs::remove_file(&previous_db).map_err(|error| error.to_string())?;
-        let _ = fs::remove_dir(&previous_data);
+fn copy_file_if_exists(source: &Path, target: &Path) -> Result<(), String> {
+    if source == target || !source.exists() {
+        return Ok(());
     }
 
-    remove_dir_tree_if_changed(
-        &PathBuf::from(&previous.dialogue_root),
-        &PathBuf::from(&next.dialogue_root),
-    )?;
-    remove_dir_tree_if_changed(
-        &PathBuf::from(&previous.artifact_root),
-        &PathBuf::from(&next.artifact_root),
-    )?;
-
-    Ok(())
+    copy_file(source, target)
 }
 
 fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
@@ -295,9 +276,10 @@ fn copy_dir_if_exists(source: &Path, target: &Path) -> Result<(), String> {
     }
 
     if !source.exists() {
-        fs::create_dir_all(target).map_err(|error| error.to_string())?;
         return Ok(());
     }
+
+    ensure_target_is_not_inside_source(source, target)?;
 
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
 
@@ -316,12 +298,39 @@ fn copy_dir_if_exists(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_dir_tree_if_changed(previous: &Path, next: &Path) -> Result<(), String> {
-    if previous == next || !previous.exists() {
-        return Ok(());
+fn ensure_target_is_not_inside_source(source: &Path, target: &Path) -> Result<(), String> {
+    let source_absolute = absolute_existing_path(source)?;
+    let target_absolute = absolute_target_path(target)?;
+
+    if target_absolute.starts_with(&source_absolute) {
+        return Err("新目录不能位于旧目录内部，否则会导致递归复制。".to_string());
     }
 
-    fs::remove_dir_all(previous).map_err(|error| error.to_string())
+    Ok(())
+}
+
+fn absolute_existing_path(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize().map_err(|error| error.to_string())
+}
+
+fn absolute_target_path(path: &Path) -> Result<PathBuf, String> {
+    if path.exists() {
+        return path.canonicalize().map_err(|error| error.to_string());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法解析目标目录。".to_string())?;
+    let parent_absolute = if parent.exists() {
+        parent.canonicalize().map_err(|error| error.to_string())?
+    } else {
+        absolute_target_path(parent)?
+    };
+
+    Ok(path
+        .file_name()
+        .map(|name| parent_absolute.join(name))
+        .unwrap_or(parent_absolute))
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {

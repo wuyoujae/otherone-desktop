@@ -9,6 +9,9 @@ import {
   X,
 } from 'lucide-react';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { loadWorkflowTasksForRangeFromStorage } from '../services/workflowStorage';
+import type { WorkflowTask } from '../types/workflow';
+import { resolveWorkflowTaskToneClasses } from '../utils/workflowTaskColors';
 import { TaskView } from './TaskView';
 
 const iconSize = { width: 16, height: 16 };
@@ -16,19 +19,143 @@ const iconSize = { width: 16, height: 16 };
 type WorkflowView = 'calendar' | 'task';
 
 type WorkflowPageProps = {
+  onNotice?: (type: 'success' | 'warn' | 'fail' | 'info', title: string, description?: string) => void;
   onClose: () => void;
 };
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const WEEKDAYS_SHORT = ['一', '二', '三', '四', '五', '六', '日'];
 
-// 24 hours
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
-
 // ----- helpers -----
 
 function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function formatDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseTaskDate(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function taskStartAt(task: WorkflowTask) {
+  return task.startAt || task.scheduledAt || null;
+}
+
+function taskStartClock(task: WorkflowTask) {
+  const start = parseTaskDate(taskStartAt(task));
+
+  if (!start) {
+    return null;
+  }
+
+  const hour = `${start.getHours()}`.padStart(2, '0');
+  const minute = `${start.getMinutes()}`.padStart(2, '0');
+  return `${hour}:${minute}`;
+}
+
+function taskEndClock(task: WorkflowTask) {
+  const end = parseTaskDate(task.endAt);
+
+  if (!end) {
+    return null;
+  }
+
+  const hour = `${end.getHours()}`.padStart(2, '0');
+  const minute = `${end.getMinutes()}`.padStart(2, '0');
+  return `${hour}:${minute}`;
+}
+
+function taskOccursOnDate(task: WorkflowTask, day: Date) {
+  const dayKey = formatDateKey(day);
+  const occurrenceDate = task.occurrenceDate;
+
+  if (occurrenceDate) {
+    return occurrenceDate === dayKey;
+  }
+
+  const start = parseTaskDate(taskStartAt(task));
+
+  if (start) {
+    return formatDateKey(start) === dayKey;
+  }
+
+  const repeatStart = task.repeatStartDate;
+  const repeatEnd = task.repeatEndDate;
+
+  if (repeatStart && repeatEnd && repeatStart !== repeatEnd) {
+    return dayKey >= repeatStart && dayKey <= repeatEnd;
+  }
+
+  return false;
+}
+
+function taskTitle(task: WorkflowTask) {
+  return task.title.trim() || task.prompt.trim() || '未命名任务';
+}
+
+function taskPreview(task: WorkflowTask) {
+  return task.content
+    .split('\n')
+    .map((line) => line.replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' / ') || task.prompt.trim();
+}
+
+type CalendarTaskBlock = {
+  tasks: WorkflowTask[];
+  toneClasses: string[];
+  time: string;
+};
+
+type CalendarTaskPopover = {
+  left: number;
+  task: WorkflowTask;
+  time: string;
+  top: number;
+};
+
+function buildCalendarBlocks(day: Date, tasks: WorkflowTask[]): CalendarTaskBlock[] {
+  const blocks = new Map<string, WorkflowTask[]>();
+
+  tasks.forEach((task) => {
+    if (!taskOccursOnDate(task, day)) {
+      return;
+    }
+
+    const time = taskStartClock(task);
+
+    if (!time) {
+      return;
+    }
+
+    const current = blocks.get(time) ?? [];
+    current.push(task);
+    blocks.set(time, current);
+  });
+
+  return Array.from(blocks.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([time, blockTasks]) => {
+      const sortedTasks = blockTasks.sort((a, b) => taskTitle(a).localeCompare(taskTitle(b), 'zh-CN'));
+
+      return {
+        time,
+        tasks: sortedTasks,
+        toneClasses: resolveWorkflowTaskToneClasses(sortedTasks),
+      };
+    });
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -151,14 +278,21 @@ function DatePicker({ anchorRef, onChange, onClose, open, selected }: DatePicker
 
 // ----- Main component -----
 
-export function WorkflowPage({ onClose }: WorkflowPageProps) {
+export function WorkflowPage({ onClose, onNotice }: WorkflowPageProps) {
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState(today);
   const [viewMode, setViewMode] = useState<WorkflowView>('calendar');
   const [animDir, setAnimDir] = useState<1 | -1 | 0>(0);
   const [datepickerOpen, setDatepickerOpen] = useState(false);
   const [focusMode, setFocusMode] = useState(true);
+  const [newTaskRequestId, setNewTaskRequestId] = useState(0);
+  const [selectedTaskRequestId, setSelectedTaskRequestId] = useState<string | null>(null);
+  const [calendarTasks, setCalendarTasks] = useState<WorkflowTask[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarPopover, setCalendarPopover] = useState<CalendarTaskPopover | null>(null);
+  const [calendarPopoverClosing, setCalendarPopoverClosing] = useState(false);
   const dateButtonRef = useRef<HTMLButtonElement | null>(null);
+  const calendarPopoverCloseTimerRef = useRef<number | null>(null);
 
   // Compute the 7 days centered on the selected date
   const visibleDays = useMemo(() => {
@@ -175,9 +309,99 @@ export function WorkflowPage({ onClose }: WorkflowPageProps) {
 
   const centerIndex = 3;
 
+  useEffect(() => {
+    if (viewMode !== 'calendar' || visibleDays.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const startDate = formatDateKey(visibleDays[0]);
+    const endDate = formatDateKey(visibleDays[visibleDays.length - 1]);
+
+    setCalendarLoading(true);
+    loadWorkflowTasksForRangeFromStorage(startDate, endDate)
+      .then((tasks) => {
+        if (!cancelled) {
+          setCalendarTasks(tasks);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCalendarTasks([]);
+          onNotice?.('fail', '日历任务加载失败', error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCalendarLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onNotice, viewMode, visibleDays]);
+
   const goToToday = useCallback(() => {
     setAnimDir(0);
     setSelectedDate(new Date());
+  }, []);
+
+  const openNewTaskPrompt = useCallback(() => {
+    setSelectedTaskRequestId(null);
+    setViewMode('task');
+    setNewTaskRequestId((id) => id + 1);
+  }, []);
+
+  const openTaskPrompt = useCallback(() => {
+    setSelectedTaskRequestId(null);
+    setViewMode('task');
+  }, []);
+
+  const openTaskFromCalendar = useCallback((taskId: string, taskDate: Date) => {
+    setSelectedTaskRequestId(taskId);
+    setSelectedDate(taskDate);
+    setCalendarPopoverClosing(false);
+    setCalendarPopover(null);
+    setViewMode('task');
+  }, []);
+
+  const showCalendarPopover = useCallback((task: WorkflowTask, time: string, element: HTMLElement) => {
+    if (calendarPopoverCloseTimerRef.current !== null) {
+      window.clearTimeout(calendarPopoverCloseTimerRef.current);
+      calendarPopoverCloseTimerRef.current = null;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const popoverWidth = 174;
+    const viewportPadding = 12;
+    const left = Math.min(
+      Math.max(rect.left + 12, viewportPadding),
+      Math.max(viewportPadding, window.innerWidth - popoverWidth - viewportPadding),
+    );
+    const top = rect.bottom + 6;
+
+    setCalendarPopoverClosing(false);
+    setCalendarPopover({ left, task, time, top });
+  }, []);
+
+  const hideCalendarPopover = useCallback(() => {
+    if (calendarPopoverCloseTimerRef.current !== null) {
+      window.clearTimeout(calendarPopoverCloseTimerRef.current);
+    }
+
+    setCalendarPopoverClosing(true);
+    calendarPopoverCloseTimerRef.current = window.setTimeout(() => {
+      setCalendarPopover(null);
+      setCalendarPopoverClosing(false);
+      calendarPopoverCloseTimerRef.current = null;
+    }, 180);
+  }, []);
+
+  useEffect(() => () => {
+    if (calendarPopoverCloseTimerRef.current !== null) {
+      window.clearTimeout(calendarPopoverCloseTimerRef.current);
+    }
   }, []);
 
   const shiftDays = useCallback(
@@ -221,7 +445,7 @@ export function WorkflowPage({ onClose }: WorkflowPageProps) {
             <button
               className={`workflow-toggle-btn ${viewMode === 'task' ? 'active' : ''}`}
               type="button"
-              onClick={() => setViewMode('task')}
+              onClick={openTaskPrompt}
             >
               <ListTodo style={iconSize} />
               <span>任务</span>
@@ -289,7 +513,13 @@ export function WorkflowPage({ onClose }: WorkflowPageProps) {
           >
             {focusMode ? <Eye style={{ width: 18, height: 18 }} /> : <EyeOff style={{ width: 18, height: 18 }} />}
           </button>
-          <button className="workflow-icon-btn" type="button" title="新增任务" aria-label="新增任务">
+          <button
+            className="workflow-icon-btn"
+            type="button"
+            title="新增任务"
+            aria-label="新增任务"
+            onClick={openNewTaskPrompt}
+          >
             <Plus style={{ width: 18, height: 18 }} />
           </button>
           <button className="workflow-icon-btn" type="button" title="关闭" aria-label="关闭工作流" onClick={onClose}>
@@ -327,16 +557,42 @@ export function WorkflowPage({ onClose }: WorkflowPageProps) {
             <div className="workflow-swimlane-grid">
               {visibleDays.map((d, i) => {
                 const isCenter = focusMode && i === centerIndex;
+                const isToday = isSameDay(d, today);
+                const blocks = buildCalendarBlocks(d, calendarTasks);
                 return (
                   <div className={`workflow-swimlane-column ${isCenter ? 'is-center' : ''}`} key={i}>
                     <div className="workflow-slot-inner">
-                      {HOURS.map((hour) => (
-                        <div className="workflow-timeslot" key={hour}>
-                          <span className="workflow-timeslot-label">
-                            {String(hour).padStart(2, '0')}:00
-                          </span>
-                        </div>
-                      ))}
+                      {calendarLoading ? (
+                        <div className="workflow-calendar-empty">加载中</div>
+                      ) : blocks.length === 0 ? (
+                        <div className="workflow-calendar-empty">{isToday ? '今天没有任务' : '暂无任务'}</div>
+                      ) : (
+                        blocks.map((block) => (
+                          <div className="workflow-calendar-time-block" key={block.time}>
+                            <div className="workflow-calendar-time-label">{block.time}</div>
+                            <div className="workflow-calendar-task-stack">
+                              {block.tasks.map((task, taskIndex) => (
+                                <button
+                                  className={`workflow-calendar-task ${block.toneClasses[taskIndex]} ${task.status === 'completed' ? 'is-completed' : ''}`}
+                                  key={task.id}
+                                  type="button"
+                                  title={taskTitle(task)}
+                                  onClick={() => openTaskFromCalendar(task.id, d)}
+                                  onFocus={(event) => showCalendarPopover(task, block.time, event.currentTarget)}
+                                  onBlur={hideCalendarPopover}
+                                  onMouseEnter={(event) => showCalendarPopover(task, block.time, event.currentTarget)}
+                                  onMouseLeave={hideCalendarPopover}
+                                >
+                                  <span className="workflow-calendar-task-title">{taskTitle(task)}</span>
+                                  {taskEndClock(task) && (
+                                    <span className="workflow-calendar-task-time">{taskStartClock(task)}-{taskEndClock(task)}</span>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      )}
                     </div>
                     {/* Mask only when focus mode is on and column is not center */}
                     {focusMode && !isCenter && <div className="workflow-column-mask" />}
@@ -350,7 +606,24 @@ export function WorkflowPage({ onClose }: WorkflowPageProps) {
 
       {/* ---- Task view ---- */}
       {viewMode === 'task' && (
-        <TaskView selectedDate={selectedDate} />
+        <TaskView
+          selectedDate={selectedDate}
+          selectedTaskId={selectedTaskRequestId}
+          newTaskRequestId={newTaskRequestId}
+          onNotice={onNotice}
+        />
+      )}
+
+      {calendarPopover && (
+        <div
+          className={`workflow-calendar-task-popover ${calendarPopoverClosing ? 'is-closing' : 'is-open'}`}
+          role="tooltip"
+          style={{ left: calendarPopover.left, top: calendarPopover.top }}
+        >
+          <strong>{taskTitle(calendarPopover.task)}</strong>
+          <span>{calendarPopover.time}{taskEndClock(calendarPopover.task) ? `-${taskEndClock(calendarPopover.task)}` : ''}</span>
+          <span>{taskPreview(calendarPopover.task)}</span>
+        </div>
       )}
     </div>
   );

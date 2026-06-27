@@ -22,6 +22,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["time"] }
 walkdir = "2"
+windows = { version = "0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }
 
 [features]
 default = ["custom-protocol"]

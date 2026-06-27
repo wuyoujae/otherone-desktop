@@ -53,9 +53,9 @@ The storage settings page calls backend migration commands. Changing any of the 
 4. Copy or recreate the SQLite database.
 5. Verify migrated data.
 6. Update the saved storage path only after migration succeeds.
-7. Delete old managed data after successful verification.
+7. Preserve old managed data; users can manually delete old directories after verifying the new paths work.
 
-The UI warns users to manually back up data first because deleted old data cannot be recovered by the app.
+The UI warns users that migration copies data and switches paths, while old data is retained for manual cleanup after verification.
 
 ## Security
 

@@ -2,7 +2,7 @@ import { CheckCircle, ShieldAlert, Sparkles, TriangleAlert, X } from 'lucide-rea
 import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
-export type ToastKind = 'info' | 'success' | 'warn' | 'error';
+export type ToastKind = 'info' | 'success' | 'warn' | 'fail' | 'error';
 
 export type ToastNotice = {
   id: string;
@@ -20,6 +20,7 @@ const toastIcons: Record<ToastKind, ReactNode> = {
   info: <Sparkles style={{ width: 18, height: 18 }} />,
   success: <CheckCircle style={{ width: 18, height: 18 }} />,
   warn: <TriangleAlert style={{ width: 18, height: 18 }} />,
+  fail: <ShieldAlert style={{ width: 18, height: 18 }} />,
   error: <ShieldAlert style={{ width: 18, height: 18 }} />,
 };
 
@@ -41,7 +42,7 @@ export function ToastViewport({ messages, onDismiss }: ToastViewportProps) {
 
     timerRef.current = window.setTimeout(() => {
       onDismiss(active.id);
-    }, 3000);
+    }, 2000);
 
     return () => {
       if (timerRef.current) {
@@ -68,7 +69,7 @@ export function ToastViewport({ messages, onDismiss }: ToastViewportProps) {
 
         return (
           <div
-            className={`toast-envelope-item toast-${message.type} ${isActive ? 'active' : 'queued'}`}
+            className={`toast-envelope-item toast-${message.type === 'error' ? 'fail' : message.type} ${isActive ? 'active' : 'queued'}`}
             key={message.id}
             style={toastStyle}
             onMouseEnter={isActive ? () => setPaused(true) : undefined}

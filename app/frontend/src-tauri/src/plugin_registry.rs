@@ -93,11 +93,23 @@ fn officecli() -> PluginDefinition {
 /// 检测当前平台标识
 pub fn current_platform() -> &'static str {
     if cfg!(target_os = "windows") {
-        if cfg!(target_arch = "aarch64") { "win-arm64" } else { "win-x64" }
+        if cfg!(target_arch = "aarch64") {
+            "win-arm64"
+        } else {
+            "win-x64"
+        }
     } else if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") { "mac-arm64" } else { "mac-x64" }
+        if cfg!(target_arch = "aarch64") {
+            "mac-arm64"
+        } else {
+            "mac-x64"
+        }
     } else {
-        if cfg!(target_arch = "aarch64") { "linux-arm64" } else { "linux-x64" }
+        if cfg!(target_arch = "aarch64") {
+            "linux-arm64"
+        } else {
+            "linux-x64"
+        }
     }
 }
 

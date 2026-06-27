@@ -33,3 +33,36 @@ export async function migrateStorageSettingsToStorage(storage: StorageSettings) 
     },
   });
 }
+
+export async function selectDirectoryFromSystem() {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string | null>('select_directory');
+}
+
+export async function openDirectoryInSystem(path: string) {
+  const directoryPath = path.trim();
+
+  if (!directoryPath || !isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_directory', { path: directoryPath });
+  return true;
+}
+
+export async function revealFileInSystem(path: string) {
+  const filePath = path.trim();
+
+  if (!filePath || !isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('reveal_file', { path: filePath });
+  return true;
+}
