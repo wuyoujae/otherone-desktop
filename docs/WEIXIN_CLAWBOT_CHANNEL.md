@@ -50,9 +50,10 @@ Backend:
   - Long-poll runtime.
   - Inbound text parsing.
   - Per-sender 3-second text batching before Agent invocation.
-  - Active Agent command sender tracking for mid-run Weixin prompt insertion.
+  - Persists the polling cursor only after a fetched batch has been queued.
+  - Active Agent command sender, cancel tracking, and queued-prompt ACK tracking for mid-run Weixin prompt insertion and reset cleanup.
   - Agent session mapping with stale-history rotation when old localfile history has invalid tool-call ordering.
-  - `getconfig`, `sendtyping`, and text `sendmessage`.
+  - `getconfig`, `sendtyping`, and retried text `sendmessage`.
 - `app/frontend/src-tauri/src/chat.rs`
   - Adds `start_channel_agent_run` and `enqueue_channel_agent_prompts` for non-UI external channel multi-prompt calls.
 - `app/frontend/src-tauri/src/tools.rs`
@@ -79,16 +80,19 @@ Backend:
 5. Backend stores token/base URL and can start long polling.
 6. Inbound text messages arrive from `getupdates`.
 7. Backend records each inbound message and queues it by `(account_id, from_user_id)`.
-8. The sender queue waits for a 3-second quiet window; new text from the same sender refreshes the window.
-9. Backend maps the sender to an `otherone-agent` session.
-10. Backend requests typing config and sends typing status `1`.
-11. Backend starts an interactive Weixin-safe Agent run through `start_channel_agent_run`.
-12. For multi-message batches, each Weixin text is written as its own `user` entry before Agent invocation.
-13. If an old mapped Agent session fails because its localfile history contains unmatched `tool_calls`, backend rotates that sender to a fresh session id and retries once.
-14. If more text from the same sender arrives while the Agent is still active, the backend sends `AgentStreamCommand::EnqueueUserPrompts` through the active command sender.
-15. The framework persists queued prompts at safe provider-ordering boundaries and emits `queued_user_prompts`.
-16. Backend sends one final assistant text with the latest inbound `context_token`.
-17. Backend sends typing status `2` and records an event.
+8. Backend persists `get_updates_buf` only after all messages from that payload have been accepted into the local queue.
+9. The sender queue waits for a 3-second quiet window; new text from the same sender refreshes the window.
+10. Backend maps the sender to an `otherone-agent` session.
+11. Backend requests typing config and sends typing status `1`.
+12. Backend starts an interactive Weixin-safe Agent run through `start_channel_agent_run`.
+13. For multi-message batches, each Weixin text is written as its own `user` entry before Agent invocation.
+14. If an old mapped Agent session fails because its localfile history contains unmatched `tool_calls`, backend rotates that sender to a fresh session id and retries once.
+15. If more text from the same sender arrives while the Agent is still active, the backend sends `AgentStreamCommand::EnqueueUserPrompts` through the active command sender and keeps that batch in an in-flight list.
+16. The framework persists queued prompts at safe provider-ordering boundaries and emits `queued_user_prompts`; only then does backend advance the reply `context_token` to that inserted batch.
+17. Any in-flight batch that is not confirmed by `queued_user_prompts` is put back into the pending queue for the next Agent run.
+18. Backend sends one final assistant text with the latest confirmed inbound `context_token`; transient `sendmessage` failures are retried, and nested iLink business errors such as `base_resp.ret` are treated as failures.
+19. Backend sends typing status `2` and records an event.
+20. Reset increments the in-memory channel generation, clears queued/active sender state, cancels active Agent runs, deletes sender-session mappings, and drops stale delayed batches so the next inbound message creates a fresh Agent session.
 
 ## QR Payload Rules
 
@@ -195,7 +199,11 @@ Not allowed by default:
 - [x] Add sendtyping before/after Agent runs.
 - [x] Add text sendmessage with SDK-compatible fields.
 - [x] Add basic runtime events for UI diagnostics.
-- [x] Add reset flow for clearing token, polling cursor, pending queue, and sender session mapping before reconnecting.
+- [x] Add reset flow for clearing token, polling cursor, pending queue, active Agent runs, and sender session mapping before reconnecting.
+- [x] Persist polling cursor only after fetched messages are queued.
+- [x] Retry outbound Weixin text sends before recording delivery failure.
+- [x] Keep mid-run inserts pending until `queued_user_prompts` confirms framework persistence.
+- [x] Detect nested iLink business errors before marking outbound replies as sent.
 - [x] Refresh the Weixin page layout and remove the recent-message and safety-boundary cards.
 - [x] Simplify the Weixin page into one primary next-step action plus contextual reset.
 - [x] Rotate stale Agent sessions when old localfile history has invalid tool-call ordering.

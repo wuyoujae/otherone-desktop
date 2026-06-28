@@ -2639,8 +2639,6 @@ export function App() {
           <PluginsPage onClose={() => switchView('new')} />
         )}
       </main>
-      </div>
-
       <ArtifactsPanel
         addedFiles={addedFiles}
         deletedFiles={deletedFiles}
@@ -2648,6 +2646,7 @@ export function App() {
         onOpenFileLocation={handleOpenArtifactLocation}
         open={artifactsPanelOpen}
       />
+      </div>
 
       <ToastViewport messages={toasts} onDismiss={dismissToast} />
       <ConfirmDialog

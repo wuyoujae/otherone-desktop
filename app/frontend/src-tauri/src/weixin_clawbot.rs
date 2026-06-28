@@ -4,7 +4,7 @@ use reqwest::blocking::{Client, RequestBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -20,6 +20,8 @@ const ILINK_APP_CLIENT_VERSION: &str = "132099";
 const BOT_AGENT: &str = "OtherOne/0.1.0 (weixin-clawbot)";
 const MESSAGE_BATCH_DELAY_MS: u64 = 3_000;
 const MESSAGE_ACTIVE_RETRY_DELAY_MS: u64 = 1_000;
+const MESSAGE_SEND_RETRY_ATTEMPTS: usize = 3;
+const MESSAGE_SEND_RETRY_DELAY_MS: u64 = 800;
 
 static RUNTIME: LazyLock<Mutex<Option<WeixinRuntime>>> = LazyLock::new(|| Mutex::new(None));
 static MESSAGE_STATE: LazyLock<Mutex<WeixinMessageState>> =
@@ -35,11 +37,15 @@ struct WeixinRuntime {
 struct WeixinMessageState {
     pending: HashMap<String, PendingWeixinBatch>,
     active: HashMap<String, ActiveWeixinRun>,
+    reset_generation: u64,
 }
 
 struct ActiveWeixinRun {
     commands: Option<chat::ChannelAgentCommandSender>,
+    cancel: Option<chat::ChannelAgentCancelSender>,
     context_token: String,
+    inflight_inserts: VecDeque<PendingWeixinBatch>,
+    reset_generation: u64,
 }
 
 struct PendingWeixinBatch {
@@ -48,6 +54,7 @@ struct PendingWeixinBatch {
     context_token: String,
     messages: Vec<IncomingText>,
     generation: u64,
+    reset_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -398,12 +405,21 @@ pub fn weixin_clawbot_reset(app: AppHandle) -> Result<WeixinClawbotStatus, Strin
         }
     }
 
-    {
+    let active_cancels = {
         let mut state = MESSAGE_STATE
             .lock()
             .map_err(|_| "无法锁定微信消息队列。".to_string())?;
         state.pending.clear();
-        state.active.clear();
+        state.reset_generation = state.reset_generation.saturating_add(1);
+        state
+            .active
+            .drain()
+            .filter_map(|(_, mut run)| run.cancel.take())
+            .collect::<Vec<_>>()
+    };
+
+    for cancel in active_cancels {
+        let _ = cancel.send(());
     }
 
     let conn = open_weixin_db(&app)?;
@@ -516,24 +532,33 @@ fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
 
         match client.get_updates(&account.get_updates_buf) {
             Ok(payload) => {
-                if let Err(error) = update_poll_state(&app, &account_id, &payload.get_updates_buf) {
-                    record_event(
-                        &app,
-                        &account_id,
-                        "system",
-                        "",
-                        "更新轮询状态失败",
-                        "error",
-                        &error,
-                    );
-                }
-
                 let message_count = payload.messages.len();
+                let mut processed_all = true;
                 for message in payload.messages {
                     if stop.load(Ordering::SeqCst) {
+                        processed_all = false;
                         break;
                     }
-                    enqueue_incoming_text(&app, &account_id, &client, message);
+                    if !enqueue_incoming_text(&app, &account_id, &client, message) {
+                        processed_all = false;
+                        break;
+                    }
+                }
+
+                if processed_all {
+                    if let Err(error) =
+                        update_poll_state(&app, &account_id, &payload.get_updates_buf)
+                    {
+                        record_event(
+                            &app,
+                            &account_id,
+                            "system",
+                            "",
+                            "更新轮询状态失败",
+                            "error",
+                            &error,
+                        );
+                    }
                 }
 
                 if message_count == 0 {
@@ -567,7 +592,7 @@ fn enqueue_incoming_text(
     account_id: &str,
     client: &IlinkClient,
     message: IncomingText,
-) {
+) -> bool {
     record_event(
         app,
         account_id,
@@ -592,9 +617,10 @@ fn enqueue_incoming_text(
                 "error",
                 "",
             );
-            return;
+            return false;
         };
 
+        let reset_generation = state.reset_generation;
         let entry = state
             .pending
             .entry(key)
@@ -604,6 +630,7 @@ fn enqueue_incoming_text(
                 context_token: String::new(),
                 messages: Vec::new(),
                 generation: 0,
+                reset_generation,
             });
         entry.context_token = context_token;
         entry.messages.push(message);
@@ -619,6 +646,7 @@ fn enqueue_incoming_text(
         generation,
         MESSAGE_BATCH_DELAY_MS,
     );
+    true
 }
 
 fn spawn_weixin_batch_flush(
@@ -662,8 +690,19 @@ fn flush_weixin_batch(
             return;
         };
 
-        let current_generation = state.pending.get(&key).map(|entry| entry.generation);
+        let current_generation = state
+            .pending
+            .get(&key)
+            .filter(|entry| entry.reset_generation == state.reset_generation)
+            .map(|entry| entry.generation);
         if current_generation != Some(generation) {
+            if state
+                .pending
+                .get(&key)
+                .is_some_and(|entry| entry.reset_generation != state.reset_generation)
+            {
+                state.pending.remove(&key);
+            }
             return;
         }
 
@@ -687,7 +726,10 @@ fn flush_weixin_batch(
                     key.clone(),
                     ActiveWeixinRun {
                         commands: None,
+                        cancel: None,
                         context_token: batch.context_token.clone(),
+                        inflight_inserts: VecDeque::new(),
+                        reset_generation: batch.reset_generation,
                     },
                 );
             }
@@ -714,15 +756,56 @@ fn flush_weixin_batch(
 
         if let Some(sender) = active_commands {
             match chat::enqueue_channel_agent_prompts(&sender, prompts) {
-                Ok(()) => record_event(
-                    &app,
-                    &batch.account_id,
-                    "system",
-                    &batch.from_user_id,
-                    "运行中消息已插入 Agent",
-                    "inserted",
-                    "",
-                ),
+                Ok(()) => {
+                    let account_id_for_event = batch.account_id.clone();
+                    let from_user_id_for_event = batch.from_user_id.clone();
+                    let mut pending_tracking = Some(batch);
+                    let tracked = if let Ok(mut state) = MESSAGE_STATE.lock() {
+                        if let Some(active) = state.active.get_mut(&key).filter(|active| {
+                            pending_tracking.as_ref().is_some_and(|batch| {
+                                active.reset_generation == batch.reset_generation
+                            })
+                        }) {
+                            if let Some(batch) = pending_tracking.take() {
+                                active.inflight_inserts.push_back(batch);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let retry_generation =
+                        pending_tracking.and_then(|batch| requeue_weixin_batch(&key, batch));
+                    if let Some(next_generation) = retry_generation {
+                        spawn_weixin_batch_flush(
+                            app.clone(),
+                            account_id.clone(),
+                            from_user_id.clone(),
+                            client.clone(),
+                            next_generation,
+                            MESSAGE_ACTIVE_RETRY_DELAY_MS,
+                        );
+                    }
+
+                    record_event(
+                        &app,
+                        &account_id_for_event,
+                        "system",
+                        &from_user_id_for_event,
+                        if tracked {
+                            "运行中消息已发送到 Agent 队列，等待框架确认"
+                        } else {
+                            "运行中消息追踪失败，已回到待处理队列"
+                        },
+                        if tracked { "queued" } else { "retry" },
+                        "",
+                    );
+                }
                 Err(error) => {
                     record_event(
                         &app,
@@ -738,22 +821,7 @@ fn flush_weixin_batch(
                         let Ok(mut state) = MESSAGE_STATE.lock() else {
                             return;
                         };
-                        if let Some(entry) = state.pending.get_mut(&key) {
-                            let mut messages = batch.messages;
-                            messages.append(&mut entry.messages);
-                            entry.messages = messages;
-                            if entry.context_token.trim().is_empty() {
-                                entry.context_token = batch.context_token;
-                            }
-                            entry.generation = entry.generation.saturating_add(1);
-                            entry.generation
-                        } else {
-                            let mut retry_batch = batch;
-                            retry_batch.generation = retry_batch.generation.saturating_add(1);
-                            let generation = retry_batch.generation;
-                            state.pending.insert(key.clone(), retry_batch);
-                            generation
-                        }
+                        requeue_weixin_batch_locked(&mut state, &key, batch).unwrap_or(generation)
                     };
                     spawn_weixin_batch_flush(
                         app,
@@ -783,19 +851,120 @@ fn prompts_from_batch(batch: &PendingWeixinBatch) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+fn prompt_count_from_batch(batch: &PendingWeixinBatch) -> usize {
+    batch
+        .messages
+        .iter()
+        .filter(|message| !message.text.trim().is_empty())
+        .count()
+}
+
+fn requeue_weixin_batch_locked(
+    state: &mut WeixinMessageState,
+    key: &str,
+    mut batch: PendingWeixinBatch,
+) -> Option<u64> {
+    if batch.reset_generation != state.reset_generation {
+        return None;
+    }
+
+    if state
+        .pending
+        .get(key)
+        .is_some_and(|entry| entry.reset_generation != state.reset_generation)
+    {
+        state.pending.remove(key);
+    }
+
+    if let Some(entry) = state.pending.get_mut(key) {
+        let mut messages = batch.messages;
+        messages.append(&mut entry.messages);
+        entry.messages = messages;
+        if entry.context_token.trim().is_empty() {
+            entry.context_token = batch.context_token;
+        }
+        entry.generation = entry.generation.saturating_add(1);
+        Some(entry.generation)
+    } else {
+        batch.generation = batch.generation.saturating_add(1);
+        let generation = batch.generation;
+        state.pending.insert(key.to_string(), batch);
+        Some(generation)
+    }
+}
+
+fn requeue_weixin_batch(key: &str, batch: PendingWeixinBatch) -> Option<u64> {
+    let Ok(mut state) = MESSAGE_STATE.lock() else {
+        return None;
+    };
+    requeue_weixin_batch_locked(&mut state, key, batch)
+}
+
+fn settle_weixin_active_inserts(key: &str, acknowledged_prompts: usize) -> usize {
+    let Ok(mut state) = MESSAGE_STATE.lock() else {
+        return 0;
+    };
+
+    let mut unconfirmed = Vec::new();
+    let mut requeued_prompt_count = 0usize;
+
+    {
+        let Some(active) = state.active.get_mut(key) else {
+            return 0;
+        };
+        let mut remaining = acknowledged_prompts;
+
+        while let Some(batch) = active.inflight_inserts.pop_front() {
+            let prompt_count = prompt_count_from_batch(&batch);
+            if prompt_count > 0 && remaining >= prompt_count {
+                remaining -= prompt_count;
+                active.context_token = batch.context_token.clone();
+            } else {
+                requeued_prompt_count = requeued_prompt_count.saturating_add(prompt_count);
+                unconfirmed.push(batch);
+            }
+        }
+    }
+
+    for batch in unconfirmed {
+        let _ = requeue_weixin_batch_locked(&mut state, key, batch);
+    }
+
+    requeued_prompt_count
+}
+
 fn start_weixin_channel_run(
     app: &AppHandle,
     key: &str,
     agent_session_id: String,
     prompts: Vec<String>,
+    reset_generation: u64,
 ) -> Result<chat::ChannelAgentRun, String> {
-    let run =
+    if !is_weixin_active_run_current(key, reset_generation) {
+        return Err(chat::CHANNEL_AGENT_CANCELLED_ERROR.to_string());
+    }
+
+    let mut run =
         chat::start_channel_agent_run(app.clone(), agent_session_id, prompts, "Weixin ClawBot")?;
 
+    let mut attached_to_active_run = false;
     if let Ok(mut state) = MESSAGE_STATE.lock() {
-        if let Some(active) = state.active.get_mut(key) {
+        if let Some(active) = state
+            .active
+            .get_mut(key)
+            .filter(|active| active.reset_generation == reset_generation)
+        {
             active.commands = Some(run.commands.clone());
+            active.cancel = run.cancel.take();
+            attached_to_active_run = true;
         }
+    }
+
+    if !attached_to_active_run {
+        if let Some(cancel) = run.cancel.take() {
+            let _ = cancel.send(());
+        }
+        return Err(chat::CHANNEL_AGENT_CANCELLED_ERROR.to_string());
     }
 
     Ok(run)
@@ -807,6 +976,10 @@ fn process_incoming_text_batch(
     batch: PendingWeixinBatch,
     key: String,
 ) {
+    if !is_weixin_batch_current(batch.reset_generation) {
+        return;
+    }
+
     let prompts = prompts_from_batch(&batch);
     if prompts.is_empty() {
         finish_weixin_active_run(
@@ -858,8 +1031,37 @@ fn process_incoming_text_batch(
         let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 1);
     }
 
-    let run = match start_weixin_channel_run(app, &key, agent_session_id.clone(), prompts) {
+    if !is_weixin_batch_current(batch.reset_generation) {
+        let _ = finish_weixin_active_run(
+            app,
+            client,
+            &key,
+            &batch.account_id,
+            &batch.from_user_id,
+            &batch.context_token,
+        );
+        return;
+    }
+
+    let run = match start_weixin_channel_run(
+        app,
+        &key,
+        agent_session_id.clone(),
+        prompts,
+        batch.reset_generation,
+    ) {
         Ok(run) => run,
+        Err(error) if chat::is_channel_agent_cancelled(&error) => {
+            let _ = finish_weixin_active_run(
+                app,
+                client,
+                &key,
+                &batch.account_id,
+                &batch.from_user_id,
+                &batch.context_token,
+            );
+            return;
+        }
         Err(error) if should_rotate_agent_session(&error) => {
             record_event(
                 app,
@@ -877,9 +1079,26 @@ fn process_incoming_text_batch(
                 &batch.context_token,
             )
             .and_then(|next_session_id| {
-                start_weixin_channel_run(app, &key, next_session_id, prompts_for_retry.clone())
+                start_weixin_channel_run(
+                    app,
+                    &key,
+                    next_session_id,
+                    prompts_for_retry.clone(),
+                    batch.reset_generation,
+                )
             }) {
                 Ok(run) => run,
+                Err(retry_error) if chat::is_channel_agent_cancelled(&retry_error) => {
+                    let _ = finish_weixin_active_run(
+                        app,
+                        client,
+                        &key,
+                        &batch.account_id,
+                        &batch.from_user_id,
+                        &batch.context_token,
+                    );
+                    return;
+                }
                 Err(retry_error) => {
                     record_event(
                         app,
@@ -939,6 +1158,22 @@ fn process_incoming_text_batch(
         .recv()
         .unwrap_or_else(|_| Err("Agent 结果通道已关闭。".to_string()));
 
+    if reply_result
+        .as_ref()
+        .err()
+        .is_some_and(|error| chat::is_channel_agent_cancelled(error))
+    {
+        let _ = finish_weixin_active_run(
+            app,
+            client,
+            &key,
+            &batch.account_id,
+            &batch.from_user_id,
+            &batch.context_token,
+        );
+        return;
+    }
+
     if let Err(error) = &reply_result {
         if should_rotate_agent_session(error) {
             record_event(
@@ -957,8 +1192,13 @@ fn process_incoming_text_batch(
                 &batch.context_token,
             )
             .and_then(|next_session_id| {
-                let retry_run =
-                    start_weixin_channel_run(app, &key, next_session_id, prompts_for_retry)?;
+                let retry_run = start_weixin_channel_run(
+                    app,
+                    &key,
+                    next_session_id,
+                    prompts_for_retry,
+                    batch.reset_generation,
+                )?;
                 retry_run
                     .result
                     .recv()
@@ -968,6 +1208,40 @@ fn process_incoming_text_batch(
                 Err(retry_error) => Err(retry_error),
             };
         }
+    }
+
+    if reply_result
+        .as_ref()
+        .err()
+        .is_some_and(|error| chat::is_channel_agent_cancelled(error))
+    {
+        let _ = finish_weixin_active_run(
+            app,
+            client,
+            &key,
+            &batch.account_id,
+            &batch.from_user_id,
+            &batch.context_token,
+        );
+        return;
+    }
+
+    let acknowledged_inserted_prompts = reply_result
+        .as_ref()
+        .ok()
+        .map(|reply| reply.queued_prompts)
+        .unwrap_or_default();
+    let requeued_prompts = settle_weixin_active_inserts(&key, acknowledged_inserted_prompts);
+    if requeued_prompts > 0 {
+        record_event(
+            app,
+            &batch.account_id,
+            "system",
+            &batch.from_user_id,
+            "运行中消息未被框架确认，已回到待处理队列",
+            "retry",
+            &format!("{requeued_prompts} 条消息等待下一轮处理"),
+        );
     }
 
     let reply_context_token = finish_weixin_active_run(
@@ -980,7 +1254,7 @@ fn process_incoming_text_batch(
     );
 
     let reply = match reply_result {
-        Ok(reply) => reply,
+        Ok(reply) => reply.reply,
         Err(error) => {
             record_event(
                 app,
@@ -1002,6 +1276,26 @@ fn process_incoming_text_batch(
     }
 }
 
+fn is_weixin_batch_current(reset_generation: u64) -> bool {
+    let Ok(state) = MESSAGE_STATE.lock() else {
+        return false;
+    };
+
+    state.reset_generation == reset_generation
+}
+
+fn is_weixin_active_run_current(key: &str, reset_generation: u64) -> bool {
+    let Ok(state) = MESSAGE_STATE.lock() else {
+        return false;
+    };
+
+    state.reset_generation == reset_generation
+        && state
+            .active
+            .get(key)
+            .is_some_and(|active| active.reset_generation == reset_generation)
+}
+
 fn finish_weixin_active_run(
     app: &AppHandle,
     client: &IlinkClient,
@@ -1010,6 +1304,19 @@ fn finish_weixin_active_run(
     from_user_id: &str,
     fallback_context_token: &str,
 ) -> String {
+    let requeued_prompts = settle_weixin_active_inserts(key, 0);
+    if requeued_prompts > 0 {
+        record_event(
+            app,
+            account_id,
+            "system",
+            from_user_id,
+            "运行中消息未确认，已回到待处理队列",
+            "retry",
+            &format!("{requeued_prompts} 条消息等待下一轮处理"),
+        );
+    }
+
     let (reply_context_token, pending_generation) = {
         let Ok(mut state) = MESSAGE_STATE.lock() else {
             return fallback_context_token.to_string();
@@ -1045,26 +1352,42 @@ fn send_weixin_agent_reply(
     context_token: &str,
     reply: &str,
 ) {
-    match client.send_message(&batch.from_user_id, context_token, reply) {
-        Ok(()) => record_event(
-            app,
-            &batch.account_id,
-            "outbound",
-            &batch.from_user_id,
-            reply,
-            "sent",
-            "",
-        ),
-        Err(error) => record_event(
-            app,
-            &batch.account_id,
-            "outbound",
-            &batch.from_user_id,
-            reply,
-            "error",
-            &error,
-        ),
+    let mut last_error = String::new();
+    for attempt in 1..=MESSAGE_SEND_RETRY_ATTEMPTS {
+        match client.send_message(&batch.from_user_id, context_token, reply) {
+            Ok(()) => {
+                record_event(
+                    app,
+                    &batch.account_id,
+                    "outbound",
+                    &batch.from_user_id,
+                    reply,
+                    "sent",
+                    "",
+                );
+                return;
+            }
+            Err(error) => {
+                last_error = error;
+                if attempt < MESSAGE_SEND_RETRY_ATTEMPTS {
+                    thread::sleep(StdDuration::from_millis(MESSAGE_SEND_RETRY_DELAY_MS));
+                }
+            }
+        }
     }
+
+    record_event(
+        app,
+        &batch.account_id,
+        "outbound",
+        &batch.from_user_id,
+        reply,
+        "error",
+        &format!(
+            "发送微信消息失败，已重试 {} 次：{}",
+            MESSAGE_SEND_RETRY_ATTEMPTS, last_error
+        ),
+    );
 }
 
 fn build_status(app: &AppHandle) -> Result<WeixinClawbotStatus, String> {
@@ -1638,13 +1961,24 @@ fn parse_response(response: reqwest::blocking::Response) -> Result<Value, String
 }
 
 fn ensure_api_success(value: &Value) -> Result<(), String> {
-    let code = value
-        .get("ret")
-        .and_then(Value::as_i64)
-        .or_else(|| value.get("errcode").and_then(Value::as_i64));
+    let code = find_i64_any(
+        value,
+        &["ret", "errcode", "errCode", "error_code", "errorCode"],
+    );
 
     if let Some(code) = code.filter(|code| *code != 0) {
-        let message = find_string_any(value, &["errmsg", "message", "err_msg"]).unwrap_or_default();
+        let message = find_string_any(
+            value,
+            &[
+                "errmsg",
+                "message",
+                "err_msg",
+                "errMsg",
+                "error_message",
+                "errorMessage",
+            ],
+        )
+        .unwrap_or_default();
         return Err(format!("iLink 返回错误 {code}: {message}"));
     }
 
@@ -1747,6 +2081,15 @@ fn find_u64_any(value: &Value, keys: &[&str]) -> Option<u64> {
     None
 }
 
+fn find_i64_any(value: &Value, keys: &[&str]) -> Option<i64> {
+    for key in keys {
+        if let Some(value) = find_value_by_key(value, key).and_then(value_to_i64) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 fn find_value_by_key<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     match value {
         Value::Object(object) => {
@@ -1777,6 +2120,14 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::String(value) => Some(value.clone()),
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn value_to_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(value) => value.as_i64(),
+        Value::String(value) => value.trim().parse::<i64>().ok(),
         _ => None,
     }
 }

@@ -198,10 +198,23 @@ struct DeltaSegment {
 }
 
 pub type ChannelAgentCommandSender = tokio::sync::mpsc::Sender<AgentStreamCommand>;
+pub type ChannelAgentCancelSender = tokio::sync::oneshot::Sender<()>;
+
+pub const CHANNEL_AGENT_CANCELLED_ERROR: &str = "__channel_agent_cancelled__";
 
 pub struct ChannelAgentRun {
     pub commands: ChannelAgentCommandSender,
-    pub result: std::sync::mpsc::Receiver<Result<String, String>>,
+    pub cancel: Option<ChannelAgentCancelSender>,
+    pub result: std::sync::mpsc::Receiver<Result<ChannelAgentReply, String>>,
+}
+
+pub struct ChannelAgentReply {
+    pub reply: String,
+    pub queued_prompts: usize,
+}
+
+pub fn is_channel_agent_cancelled(error: &str) -> bool {
+    error == CHANNEL_AGENT_CANCELLED_ERROR
 }
 
 struct ActiveChatGuard;
@@ -572,26 +585,56 @@ pub fn start_channel_agent_run(
         Ok::<_, String>((handle.commands, handle.events))
     })?;
 
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result = collect_channel_agent_result(stream);
+        let result = collect_channel_agent_result(stream, cancel_rx);
         let _ = result_tx.send(result);
     });
 
     Ok(ChannelAgentRun {
         commands,
+        cancel: Some(cancel_tx),
         result: result_rx,
     })
 }
 
 fn collect_channel_agent_result(
     mut stream: tokio::sync::mpsc::Receiver<StreamAgentEvent>,
-) -> Result<String, String> {
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+) -> Result<ChannelAgentReply, String> {
     tauri::async_runtime::block_on(async move {
         let mut response = String::new();
         let mut fallback_complete = String::new();
+        let mut cancelled = false;
+        let mut cancel_closed = false;
+        let mut queued_prompts = 0usize;
 
-        while let Some(event) = stream.recv().await {
+        loop {
+            let event = if cancel_closed {
+                stream.recv().await
+            } else {
+                tokio::select! {
+                    event = stream.recv() => event,
+                    cancel_result = &mut cancel_rx => {
+                        match cancel_result {
+                            Ok(()) => {
+                                cancelled = true;
+                                None
+                            }
+                            Err(_) => {
+                                cancel_closed = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            };
+
+            let Some(event) = event else {
+                break;
+            };
+
             if let Some(error) = event
                 .error
                 .as_ref()
@@ -601,6 +644,8 @@ fn collect_channel_agent_result(
             }
 
             if event.event_type == "queued_user_prompts" {
+                queued_prompts = queued_prompts
+                    .saturating_add(event.content.trim().parse::<usize>().unwrap_or_default());
                 response.clear();
                 fallback_complete.clear();
                 continue;
@@ -627,6 +672,10 @@ fn collect_channel_agent_result(
             }
         }
 
+        if cancelled {
+            return Err(CHANNEL_AGENT_CANCELLED_ERROR.to_string());
+        }
+
         let answer = if response.trim().is_empty() {
             fallback_complete.trim().to_string()
         } else {
@@ -636,7 +685,10 @@ fn collect_channel_agent_result(
         if answer.is_empty() {
             Err("Agent 没有返回可发送内容。".to_string())
         } else {
-            Ok(answer)
+            Ok(ChannelAgentReply {
+                reply: answer,
+                queued_prompts,
+            })
         }
     })
 }

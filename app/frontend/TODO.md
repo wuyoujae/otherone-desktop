@@ -192,9 +192,13 @@
 - [x] Reuse the existing Weixin-safe tool scope.
 - [x] Insert mid-run Weixin messages into the active Agent run at framework safe points.
 - [x] Refresh the Weixin ClawBot page layout and remove the recent-message and safety-boundary cards.
-- [x] Add a reset command and UI action for clearing stale token, polling cursor, queue, and sender session mapping.
+- [x] Add a reset command and UI action for clearing stale token, polling cursor, queue, active Agent runs, and sender session mapping.
 - [x] Rotate stale Weixin Agent sessions when old localfile history has invalid tool-call ordering.
 - [x] Simplify the Weixin ClawBot page into one primary next-step action plus contextual reset.
+- [x] Move polling cursor persistence after fetched messages are queued.
+- [x] Retry outbound Weixin text sends before recording delivery failure.
+- [x] Keep mid-run Weixin inserts pending until the framework emits `queued_user_prompts`.
+- [x] Detect nested iLink business errors such as `base_resp.ret` before marking replies as sent.
 - [x] Update Weixin channel documentation.
 - [x] Verify frontend build and Rust check.
 
@@ -202,7 +206,11 @@
 - First version batches rapid Weixin messages before an Agent run, then enqueues later messages into that active run instead of starting a second stream.
 - The batch window uses the same product behavior as the desktop remorse window: short delay, then send the collected prompts together.
 - Final Weixin reply uses the latest context token seen for that sender during the active run.
-- Reset is intentionally local-only: it stops polling and clears stored channel state, then requires a fresh QR login.
+- Polling cursor persistence happens after local enqueue so a stopped or failed loop does not skip unqueued Weixin messages.
+- Mid-run context tokens are advanced only after `queued_user_prompts` confirms the prompts were written by the active Agent.
+- Outbound text sends use a small retry loop; final failure is recorded as an outbound error event.
+- Reset is intentionally local-only: it stops polling, cancels active channel Agent runs, clears stored channel state, and requires a fresh QR login.
+- After reset, delayed Weixin batches from the old connection are dropped and the next inbound message creates a fresh Agent session.
 - New sender session mappings use a unique session id so reset/retry does not reuse a poisoned localfile history.
 
 ## Desktop Long-Term Memory Enablement
