@@ -122,6 +122,28 @@ Migration behavior:
 
 The frontend must warn users that migration copies data and switches paths, while old data is retained for manual cleanup after verification.
 
+## Clear All Data
+
+The storage settings danger action clears local otherone data in the currently configured roots.
+
+Cleared data:
+
+- `{dataRoot}/otherone.sqlite` and SQLite sidecar files.
+- `{dataRoot}/plugins`.
+- All contents under `artifactRoot`.
+- All contents under `dialogueRoot`, including `.otherone/storage/otherone-storage.json` and `.otherone/memory/long-term-memory.json`.
+
+Preserved data:
+
+- `settings.json`, including the configured storage paths and engine settings.
+- Unknown files directly under `dataRoot`, unless they are one of the known managed files above.
+
+Runtime cleanup:
+
+- The backend rejects the clear while a desktop chat stream is active.
+- Weixin channel runtime state and plugin install cache are reset before clearing disk data.
+- The frontend clears session caches, artifact lists, stream buffers, and pending send timers after success.
+
 ## Real Chat Stream API
 
 `send_chat_message` starts a backend stream and emits `chat_stream_event` payloads:
@@ -176,10 +198,13 @@ Implemented table:
 
 Current behavior:
 
-- `edit_file` is wrapped at runtime for each chat session; the Agent-visible tool schema and tool list stay unchanged.
+- `write_file` and `edit_file` are wrapped at runtime for each chat session; the Agent-visible tool schema and tool list stay unchanged.
 - Successful `edit_file` results create or update one `edited` artifact per `(session_id, action, file_path)`.
+- Successful `write_file` results create an `added` artifact when the file is new and an `edited` artifact when it overwrites an existing file.
+- Weixin-only `send_file_to_weixin` creates or updates an `attached` artifact for an existing local file that should be delivered to the current Weixin sender.
 - The frontend queries artifacts through `list_file_artifacts(session_id)` and listens for `file_artifact_event`.
-- Added and deleted file artifacts are not implemented yet.
+- Weixin ClawBot uses current-run `added`, `edited`, and `attached` artifacts to send files back as Weixin file attachments.
+- Deleted file artifacts are not implemented yet.
 
 ## Failed First Send
 

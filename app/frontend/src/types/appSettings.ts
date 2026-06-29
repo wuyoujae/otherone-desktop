@@ -13,6 +13,7 @@ export type EngineSettings = {
   thresholdPercentage: number;
   compactionKeepRatio: number;
   compactModelId: string;
+  workflowModelId: string;
   defaultReasoningEffort: ReasoningEffort;
 };
 
@@ -28,5 +29,6 @@ export const defaultEngineSettings: EngineSettings = {
   thresholdPercentage: 0.8,
   compactionKeepRatio: 0.35,
   compactModelId: '',
+  workflowModelId: '',
   defaultReasoningEffort: 'medium',
 };

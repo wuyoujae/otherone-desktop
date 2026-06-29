@@ -1237,12 +1237,7 @@ input {
 }
 
 .state-running .tool-text {
-  background: linear-gradient(90deg, var(--text-secondary) 20%, var(--text-primary) 50%, var(--text-secondary) 80%);
-  background-size: 200% auto;
-  color: transparent;
-  -webkit-background-clip: text;
-  background-clip: text;
-  animation: shimmer-text 2s linear infinite;
+  color: var(--text-secondary);
 }
 
 .state-running .tool-icon svg {
@@ -4031,6 +4026,18 @@ select.model-input {
   gap: 8px;
 }
 
+.workflow-model-control {
+  width: 220px;
+}
+
+.workflow-model-control .custom-control-label {
+  display: none;
+}
+
+.workflow-model-control .custom-select-trigger {
+  height: 34px;
+}
+
 .workflow-today-btn {
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -4491,7 +4498,15 @@ select.model-input {
   padding: 2px 10px;
 }
 
-.task-sidebar-add-btn {
+.task-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.task-sidebar-add-btn,
+.task-sidebar-filter-btn {
   width: 28px;
   height: 28px;
   border: none;
@@ -4506,9 +4521,15 @@ select.model-input {
 }
 
 .task-sidebar-add-btn:hover,
-.task-sidebar-add-btn.active {
+.task-sidebar-add-btn.active,
+.task-sidebar-filter-btn:hover,
+.task-sidebar-filter-btn.active {
   background-color: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.task-sidebar-filter-btn.active {
+  color: #60a5fa;
 }
 
 .task-sidebar-list {
@@ -5665,6 +5686,103 @@ select.model-input {
 .plugin-hero-card:hover {
   border-color: var(--border-focus);
   background-color: var(--bg-hover);
+}
+
+.plugin-hero-button {
+  width: 100%;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.plugin-hero-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.skill-import-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+
+.skill-import-url-row {
+  display: flex;
+  gap: 10px;
+}
+
+.skill-import-url-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.skill-import-url-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.mcp-import-json-input {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mcp-import-json-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.skill-import-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.skill-import-action,
+.skill-import-secondary {
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.skill-import-action {
+  border-color: var(--btn-primary-bg);
+  background: var(--btn-primary-bg);
+  color: var(--text-inverse);
+}
+
+.skill-import-secondary {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.skill-import-action:disabled,
+.skill-import-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .plugin-hero-icon {

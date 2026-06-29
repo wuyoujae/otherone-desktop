@@ -1,0 +1,27 @@
+flowchart TD
+  A["Workflow task prompt"] --> B["Load saved provider/model configs"]
+  B --> C["Select workflow model by modelId, then default fallback"]
+  C --> D["Shared ai_runtime module"]
+  D --> D1["parse_provider"]
+  D --> D2["require_text"]
+  D --> D3["parse_tool_choice"]
+  D --> D4["build_other_params"]
+  D --> D5["select_model helpers"]
+  D --> E["Workflow-only model request"]
+  E --> F["Register only create_todo tool"]
+  E --> G["Reuse model temperature/topP/toolChoice/parallelToolCalls/extraParams"]
+  G --> H{"toolChoice from model"}
+  H -->|"none"| I["Fail fast: Todo model has tool calls disabled"]
+  H -->|"default"| J["Omit toolChoice; prompt still requires create_todo"]
+  H -->|"auto|required"| K["Pass configured toolChoice"]
+  J --> L["Model calls create_todo"]
+  K --> L
+  L --> M["Parse tool-call arguments"]
+  M --> N["Insert workflow_tasks and optional workflow_task_series"]
+
+  O["Normal chat page"] --> P["build_ai_options"]
+  P --> D
+  P --> Q["Full desktop tools + Agent stream"]
+
+  R["Key decision"] --> S["Do not reuse chat session/streaming for Todo"]
+  R --> T["Do reuse saved model configuration semantics"]

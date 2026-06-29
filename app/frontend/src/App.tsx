@@ -50,6 +50,7 @@ import { WindowTitleBar } from './components/WindowTitleBar';
 import { defaultApiConfigs } from './data/defaultApiConfigs';
 import { loadApiConfigsFromStorage, saveApiConfigsToStorage } from './services/apiConfigStorage';
 import {
+  clearAllOtheroneDataFromStorage,
   loadAppSettingsFromStorage,
   migrateStorageSettingsToStorage,
   openDirectoryInSystem,
@@ -615,6 +616,7 @@ export function App() {
   const [isSavingConfigs, setIsSavingConfigs] = useState(false);
   const [isSavingEngine, setIsSavingEngine] = useState(false);
   const [isMigratingStorage, setIsMigratingStorage] = useState(false);
+  const [isClearingAllData, setIsClearingAllData] = useState(false);
   const [storageStatus, setStorageStatus] = useState('配置尚未保存。');
   const [storagePath, setStoragePath] = useState('C:\\Users\\jae\\AppData\\Roaming\\Otherone');
   const [storageDraft, setStorageDraft] = useState(storagePath);
@@ -626,6 +628,7 @@ export function App() {
   const [dialogueDataDraft, setDialogueDataDraft] = useState(dialogueDataPath);
   const [dialogueMigrationStatus, setDialogueMigrationStatus] = useState('当前对话目录用于保存 otherone localfile 数据。');
   const [pendingStorageMigration, setPendingStorageMigration] = useState<PendingStorageMigration | null>(null);
+  const [pendingClearAllData, setPendingClearAllData] = useState(false);
   const [engineSettings, setEngineSettings] = useState(defaultEngineSettings);
   const [testingProviderId, setTestingProviderId] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
@@ -1262,6 +1265,21 @@ export function App() {
       return [nextToast, ...current];
     });
   }, []);
+
+  const updateWorkflowModelId = useCallback(async (workflowModelId: string) => {
+    const nextEngine = { ...engineSettings, workflowModelId };
+    setEngineSettings(nextEngine);
+
+    try {
+      const settings = await saveEngineSettingsToStorage(nextEngine);
+      if (settings) {
+        setEngineSettings(settings.engine);
+      }
+      pushToast('success', 'Todo AI 模型已保存');
+    } catch (error) {
+      pushToast('fail', '保存 Todo AI 模型失败', error instanceof Error ? error.message : String(error));
+    }
+  }, [engineSettings, pushToast]);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
@@ -1953,6 +1971,80 @@ export function App() {
     }
   };
 
+  const clearFrontendRuntimeData = () => {
+    pendingChatSendsRef.current.forEach((batch) => {
+      if (batch.timer) {
+        clearTimeout(batch.timer);
+      }
+    });
+    pendingChatSendsRef.current.clear();
+    streamingSessionIdsRef.current.clear();
+    sessionCacheRef.current.clear();
+    streamItemOverlayRef.current.clear();
+    pendingStreamEventsRef.current.clear();
+    streamIterRef.current.clear();
+    activeStreamGroupIdRef.current.clear();
+    queuedStreamAiGroupIdRef.current.clear();
+    activeSessionIdRef.current = null;
+
+    setSessions([]);
+    setActiveSession(null);
+    setActiveItem('');
+    setSessionError('');
+    setEditingSessionId('');
+    setEditingSessionTitle('');
+    setEditedFiles([]);
+    setDeletedFiles([]);
+    setAddedFiles([]);
+    setArtifactsPanelOpen(false);
+    setMessage('');
+    setPromptPanelOpen(false);
+  };
+
+  const requestClearAllData = () => {
+    setPendingClearAllData(true);
+  };
+
+  const cancelClearAllData = () => {
+    setPendingClearAllData(false);
+  };
+
+  const confirmClearAllData = async () => {
+    if (isClearingAllData) return;
+
+    setPendingClearAllData(false);
+    setIsClearingAllData(true);
+    setStorageMigrationStatus('正在清空本地 SQLite、插件和缓存数据，请不要关闭应用。');
+    setArtifactMigrationStatus('正在清空产物目录。');
+    setDialogueMigrationStatus('正在清空对话、记忆和 otherone localfile 数据。');
+
+    try {
+      const settings = await clearAllOtheroneDataFromStorage();
+      if (settings) {
+        applyStorageSettings(settings.storage);
+        setEngineSettings(settings.engine);
+        setReasoningEffort(settings.engine.defaultReasoningEffort);
+      }
+
+      clearFrontendRuntimeData();
+      setProviders(defaultApiConfigs);
+      setStorageStatus('本地 SQLite 配置已清空，当前显示默认配置模板。');
+      setStorageMigrationStatus('本地 SQLite、插件和缓存数据已清空。');
+      setArtifactMigrationStatus('产物目录已清空。');
+      setDialogueMigrationStatus('对话、记忆和 otherone localfile 数据已清空。');
+      pushToast('success', '所有 otherone 本地数据已清空');
+      requestAnimationFrame(resizePrompt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStorageMigrationStatus(message);
+      setArtifactMigrationStatus(message);
+      setDialogueMigrationStatus(message);
+      pushToast('error', '清空数据失败', message);
+    } finally {
+      setIsClearingAllData(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     const prompt = message.trim();
     const modelId = selectedModelId || selectorOptions[0]?.value;
@@ -2597,8 +2689,13 @@ export function App() {
                     <small style={{ color: 'var(--danger-color)' }}>将删除所有工作流、对话历史及本地缓存</small>
                   </div>
                   <div>
-                    <button className="setting-btn setting-btn-danger" type="button">
-                      全部清除
+                    <button
+                      className="setting-btn setting-btn-danger"
+                      type="button"
+                      disabled={isMigratingStorage || isClearingAllData}
+                      onClick={requestClearAllData}
+                    >
+                      {isClearingAllData ? '清除中' : '全部清除'}
                     </button>
                   </div>
                 </div>
@@ -2632,7 +2729,13 @@ export function App() {
             onMemoryModelChange={setMemoryModelId}
           />
         ) : view === 'workflow' ? (
-          <WorkflowPage onClose={() => switchView('new')} onNotice={pushToast} />
+          <WorkflowPage
+            modelOptions={modelOptions}
+            onClose={() => switchView('new')}
+            onNotice={pushToast}
+            onWorkflowModelChange={(modelId) => void updateWorkflowModelId(modelId)}
+            workflowModelId={engineSettings.workflowModelId}
+          />
         ) : view === 'weixinClawbot' ? (
           <WeixinClawbotPage onClose={() => switchView('new')} onNotice={pushToast} />
         ) : (
@@ -2658,6 +2761,16 @@ export function App() {
         tone="warning"
         onCancel={cancelStorageMigration}
         onConfirm={confirmStorageMigration}
+      />
+      <ConfirmDialog
+        open={pendingClearAllData}
+        title="确认清空所有数据"
+        description="这会删除本地 SQLite 配置、工作流、会话历史、记忆、插件安装文件和产物目录内容，操作不可撤销。"
+        confirmLabel={isClearingAllData ? '清除中' : '全部清除'}
+        cancelLabel="取消"
+        tone="danger"
+        onCancel={cancelClearAllData}
+        onConfirm={() => void confirmClearAllData()}
       />
       <SearchOverlay
         allArtifacts={allArtifacts}

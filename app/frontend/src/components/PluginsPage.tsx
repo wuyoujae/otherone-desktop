@@ -14,7 +14,8 @@ import {
   X,
 } from 'lucide-react';
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { loadPluginList, installPlugin, uninstallPlugin, type PluginEntry } from '../services/pluginService';
+import { selectDirectoryFromSystem } from '../services/appSettingsStorage';
+import { loadPluginList, installPlugin, importSkillFromDirectory, importSkillFromUrl, importMcpServers, importMcpServersFromUrl, uninstallPlugin, type PluginEntry } from '../services/pluginService';
 
 const iconSize = { width: 16, height: 16 };
 
@@ -48,7 +49,11 @@ function PluginItem({
   return (
     <div className={`plugin-item ${compact ? 'plugin-item-compact' : ''}`}>
       <div className="plugin-item-logo" style={{ backgroundColor: `${accent}18`, color: accent }}>
-        {plugin.kind === 'plugin' ? <Box style={{ width: 20, height: 20 }} /> : <Blocks style={{ width: 20, height: 20 }} />}
+        {plugin.kind === 'plugin'
+          ? <Box style={{ width: 20, height: 20 }} />
+          : plugin.kind === 'mcp'
+            ? <Puzzle style={{ width: 20, height: 20 }} />
+            : <Blocks style={{ width: 20, height: 20 }} />}
       </div>
       <div className="plugin-item-body">
         <span className="plugin-item-name">
@@ -77,14 +82,34 @@ function PluginItem({
 // HeroCard
 // ═══════════════════════════════════════
 
-function HeroCard({ icon, label, desc }: { icon: React.ReactNode; label: string; desc: string }) {
-  return (
-    <div className="plugin-hero-card">
-      <div className="plugin-hero-icon">{icon}</div>
+function HeroCard({
+  icon, label, desc, loading, onClick,
+}: {
+  icon: React.ReactNode; label: string; desc: string; loading?: boolean; onClick?: () => void;
+}) {
+  const content = (
+    <>
+      <div className="plugin-hero-icon">
+        {loading ? <Loader2 style={{ width: 22, height: 22, animation: 'spin 1s linear infinite' }} /> : icon}
+      </div>
       <div className="plugin-hero-body">
         <span className="plugin-hero-label">{label}</span>
         <span className="plugin-hero-desc">{desc}</span>
       </div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button className="plugin-hero-card plugin-hero-button" type="button" disabled={loading} onClick={onClick}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className="plugin-hero-card">
+      {content}
     </div>
   );
 }
@@ -150,6 +175,13 @@ export function PluginsPage({ onClose }: PluginsPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [installing, setInstalling] = useState<Set<string>>(new Set());
+  const [importingSkill, setImportingSkill] = useState(false);
+  const [skillImportOpen, setSkillImportOpen] = useState(false);
+  const [skillImportUrl, setSkillImportUrl] = useState('');
+  const [importingMcp, setImportingMcp] = useState(false);
+  const [mcpImportOpen, setMcpImportOpen] = useState(false);
+  const [mcpImportUrl, setMcpImportUrl] = useState('');
+  const [mcpImportJson, setMcpImportJson] = useState('');
   const [mcpOpen, setMcpOpen] = useState(true);
   const [skillOpen, setSkillOpen] = useState(true);
   const [pluginOpen, setPluginOpen] = useState(true);
@@ -176,6 +208,104 @@ export function PluginsPage({ onClose }: PluginsPageProps) {
     finally { setInstalling(prev => { const n = new Set(prev); n.delete(p.id); return n; }); }
   }, [load]);
 
+  const finishSkillImport = useCallback(async () => {
+    await load();
+    setSkillImportOpen(false);
+    setSkillImportUrl('');
+    setTab('my');
+  }, [load]);
+
+  const handleImportSkillDirectory = useCallback(async () => {
+    try {
+      setError('');
+      const directory = await selectDirectoryFromSystem();
+      if (!directory) return;
+
+      setImportingSkill(true);
+      await importSkillFromDirectory(directory);
+      await finishSkillImport();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingSkill(false);
+    }
+  }, [finishSkillImport]);
+
+  const handleImportSkillUrl = useCallback(async () => {
+    const url = skillImportUrl.trim();
+    if (!url) {
+      setError('请输入 SKILL.md URL。');
+      return;
+    }
+
+    try {
+      setError('');
+      setImportingSkill(true);
+      await importSkillFromUrl(url);
+      await finishSkillImport();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingSkill(false);
+    }
+  }, [finishSkillImport, skillImportUrl]);
+
+  const handleToggleSkillImport = useCallback(() => {
+    setError('');
+    setSkillImportOpen(open => !open);
+  }, []);
+
+  const finishMcpImport = useCallback(async () => {
+    await load();
+    setMcpImportOpen(false);
+    setMcpImportUrl('');
+    setMcpImportJson('');
+    setTab('my');
+  }, [load]);
+
+  const handleImportMcpJson = useCallback(async () => {
+    const rawConfig = mcpImportJson.trim();
+    if (!rawConfig) {
+      setError('请输入 MCP JSON 配置。');
+      return;
+    }
+
+    try {
+      setError('');
+      setImportingMcp(true);
+      await importMcpServers(rawConfig);
+      await finishMcpImport();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingMcp(false);
+    }
+  }, [finishMcpImport, mcpImportJson]);
+
+  const handleImportMcpUrl = useCallback(async () => {
+    const url = mcpImportUrl.trim();
+    if (!url) {
+      setError('请输入 MCP 配置 URL。');
+      return;
+    }
+
+    try {
+      setError('');
+      setImportingMcp(true);
+      await importMcpServersFromUrl(url);
+      await finishMcpImport();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingMcp(false);
+    }
+  }, [finishMcpImport, mcpImportUrl]);
+
+  const handleToggleMcpImport = useCallback(() => {
+    setError('');
+    setMcpImportOpen(open => !open);
+  }, []);
+
   const market = useMemo(() => plugins.filter(p => p.kind === tab || (tab === 'mcp' && p.kind === 'mcp')), [plugins, tab]);
   const installed = useMemo(() => plugins.filter(p => p.installed), [plugins]);
 
@@ -186,6 +316,17 @@ export function PluginsPage({ onClose }: PluginsPageProps) {
   }, [market, search]);
 
   const tabLabel = tab === 'mcp' ? 'MCP' : tab === 'skill' ? 'Skill' : '插件';
+  const importDescription = tab === 'skill'
+    ? '从 URL 或本地目录导入 SKILL.md'
+    : tab === 'mcp'
+      ? '从 URL 或 JSON 导入 mcpServers'
+      : `从 URL 或文件导入 ${tabLabel}`;
+  const importLoading = (tab === 'skill' && importingSkill) || (tab === 'mcp' && importingMcp);
+  const importClick = tab === 'skill'
+    ? handleToggleSkillImport
+    : tab === 'mcp'
+      ? handleToggleMcpImport
+      : undefined;
 
   return (
     <div className="plugins-page">
@@ -243,9 +384,94 @@ export function PluginsPage({ onClose }: PluginsPageProps) {
             {!search.trim() && (
               <>
                 <HeroCard icon={<Download style={{ width: 22, height: 22 }} />} label={`导入 ${tabLabel}`}
-                  desc={`从 URL 或文件导入 ${tabLabel}`} />
+                  desc={importDescription}
+                  loading={importLoading}
+                  onClick={importClick} />
                 <HeroCard icon={<Plus style={{ width: 22, height: 22 }} />} label={`创建 ${tabLabel}`}
                   desc={`基于模板创建新的 ${tabLabel}`} />
+                {tab === 'skill' && skillImportOpen && (
+                  <div className="skill-import-panel">
+                    <div className="skill-import-url-row">
+                      <input
+                        className="skill-import-url-input"
+                        placeholder="https://example.com/SKILL.md"
+                        value={skillImportUrl}
+                        onChange={e => setSkillImportUrl(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') void handleImportSkillUrl();
+                        }}
+                        disabled={importingSkill}
+                      />
+                      <button
+                        className="skill-import-action"
+                        type="button"
+                        disabled={importingSkill || !skillImportUrl.trim()}
+                        onClick={() => void handleImportSkillUrl()}
+                      >
+                        {importingSkill ? '导入中…' : 'URL 导入'}
+                      </button>
+                    </div>
+                    <div className="skill-import-actions">
+                      <button className="skill-import-secondary" type="button" disabled={importingSkill} onClick={() => void handleImportSkillDirectory()}>
+                        选择本地目录
+                      </button>
+                      <button className="skill-import-secondary" type="button" disabled={importingSkill} onClick={() => setSkillImportOpen(false)}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {tab === 'mcp' && mcpImportOpen && (
+                  <div className="skill-import-panel">
+                    <div className="skill-import-url-row">
+                      <input
+                        className="skill-import-url-input"
+                        placeholder="https://example.com/mcp.json"
+                        value={mcpImportUrl}
+                        onChange={e => setMcpImportUrl(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') void handleImportMcpUrl();
+                        }}
+                        disabled={importingMcp}
+                      />
+                      <button
+                        className="skill-import-action"
+                        type="button"
+                        disabled={importingMcp || !mcpImportUrl.trim()}
+                        onClick={() => void handleImportMcpUrl()}
+                      >
+                        {importingMcp ? '导入中…' : 'URL 导入'}
+                      </button>
+                    </div>
+                    <textarea
+                      className="mcp-import-json-input"
+                      placeholder={`{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\path\\\\to\\\\folder"]
+    }
+  }
+}`}
+                      value={mcpImportJson}
+                      onChange={e => setMcpImportJson(e.target.value)}
+                      disabled={importingMcp}
+                    />
+                    <div className="skill-import-actions">
+                      <button
+                        className="skill-import-action"
+                        type="button"
+                        disabled={importingMcp || !mcpImportJson.trim()}
+                        onClick={() => void handleImportMcpJson()}
+                      >
+                        {importingMcp ? '导入中…' : 'JSON 导入'}
+                      </button>
+                      <button className="skill-import-secondary" type="button" disabled={importingMcp} onClick={() => setMcpImportOpen(false)}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
               </>
             )}
 

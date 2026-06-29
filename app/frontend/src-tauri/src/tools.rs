@@ -270,6 +270,12 @@ struct ReplInput {
     timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct SendFileToWeixinInput {
+    file_path: String,
+}
+
 // ---------------------------------------------------------------------------
 // 工具定义
 // ---------------------------------------------------------------------------
@@ -310,10 +316,119 @@ fn skill_def() -> Tool {
 fn plugin_tool_def() -> Tool {
     Tool { tool_type: "function".to_string(), function: FunctionDefinition { name: "plugin_tool".to_string(), description: "Load a plugin's full instructions and resource paths. Use when a task needs a plugin from <available_plugins>. Returns the SKILL.md body, binary executable path (if any), and bin directory. Call this BEFORE invoking plugin commands so you know the exact binary location.".to_string(), parameters: Some(serde_json::json!({"type":"object","properties":{"plugin":{"type":"string","description":"Name of the plugin to load, as shown in <available_plugins>"}},"required":["plugin"]})) } }
 }
+fn send_file_to_weixin_def() -> Tool {
+    Tool { tool_type: "function".to_string(), function: FunctionDefinition { name: "send_file_to_weixin".to_string(), description: "Mark an existing local file to be sent back to the current Weixin ClawBot user after this reply. Use this when the user asks you to send a desktop/local file, or when a file was created by shell, PowerShell, REPL, Python, Office tools, or another process instead of write_file. Provide the absolute file path. Do not use for directories.".to_string(), parameters: Some(serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path of the existing local file to send to the Weixin user"}},"required":["file_path"]})) } }
+}
 
 // ---------------------------------------------------------------------------
 // 标签生成
 // ---------------------------------------------------------------------------
+
+fn create_todo_def() -> Tool {
+    Tool {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "create_todo".to_string(),
+            description: "Create one or more workflow todo tasks. Use this after converting the user's natural-language request into concrete task instances. For recurring requests, expand every occurrence into its own task before calling this tool.".to_string(),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": { "type": "string", "description": "The user's original todo request or the specific occurrence description." },
+                                "title": { "type": "string", "description": "Short todo title. Do not copy a long raw prompt when a concise title is clear." },
+                                "content": { "type": "string", "description": "Markdown task details. Prefer '- ' list lines." },
+                                "startAt": { "type": ["string", "null"], "description": "Concrete RFC3339 start datetime with timezone, or null for untimed tasks." },
+                                "scheduledAt": { "type": ["string", "null"], "description": "Alias for startAt." },
+                                "endAt": { "type": ["string", "null"], "description": "Concrete RFC3339 end datetime for time-range tasks." },
+                                "occurrenceDate": { "type": ["string", "null"], "description": "Concrete YYYY-MM-DD date for this task instance." },
+                                "timeText": { "type": ["string", "null"], "description": "Original time phrase from the user." },
+                                "repeatStartDate": { "type": ["string", "null"], "description": "Inclusive repeat start date when this instance came from a recurrence." },
+                                "repeatEndDate": { "type": ["string", "null"], "description": "Inclusive repeat end date when this instance came from a recurrence." },
+                                "metadata": {
+                                    "type": ["object", "null"],
+                                    "description": "Extra structured data such as priority, summary, tags, and originalPrompt."
+                                }
+                            },
+                            "required": ["title", "content"]
+                        }
+                    }
+                },
+                "required": ["tasks"]
+            })),
+        },
+    }
+}
+
+fn list_todos_def() -> Tool {
+    Tool {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "list_todos".to_string(),
+            description: "List workflow todo tasks. Use date filters for questions about today, tomorrow, a selected day, or a range. Dates must be YYYY-MM-DD.".to_string(),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "startDate": { "type": ["string", "null"], "description": "Inclusive YYYY-MM-DD start date." },
+                    "endDate": { "type": ["string", "null"], "description": "Inclusive YYYY-MM-DD end date. Defaults to startDate when omitted." },
+                    "status": { "type": ["string", "null"], "enum": ["pending", "completed", null], "description": "Optional task status filter." },
+                    "search": { "type": ["string", "null"], "description": "Optional text search across title, content, and prompt." },
+                    "limit": { "type": "integer", "description": "Maximum tasks to return. Defaults to 50, max 200." }
+                }
+            })),
+        },
+    }
+}
+
+fn update_todo_def() -> Tool {
+    Tool {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "update_todo".to_string(),
+            description: "Update one concrete workflow todo task by id. If a user changes one task into multiple recurring tasks, call delete_todo for the original task and then create_todo with all concrete occurrences.".to_string(),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Existing workflow task id." },
+                    "prompt": { "type": ["string", "null"], "description": "Updated original request or edit instruction." },
+                    "title": { "type": ["string", "null"], "description": "Updated short title." },
+                    "content": { "type": ["string", "null"], "description": "Updated markdown task content." },
+                    "startAt": { "type": ["string", "null"], "description": "Updated RFC3339 start datetime, clock time with occurrenceDate, or null to clear." },
+                    "scheduledAt": { "type": ["string", "null"], "description": "Alias for startAt." },
+                    "endAt": { "type": ["string", "null"], "description": "Updated RFC3339 end datetime, clock time with occurrenceDate/startAt, or null to clear." },
+                    "occurrenceDate": { "type": ["string", "null"], "description": "Updated YYYY-MM-DD task date." },
+                    "timeText": { "type": ["string", "null"], "description": "Updated original time phrase." },
+                    "repeatStartDate": { "type": ["string", "null"], "description": "Updated inclusive repeat start date." },
+                    "repeatEndDate": { "type": ["string", "null"], "description": "Updated inclusive repeat end date." },
+                    "metadata": { "type": ["object", "null"], "description": "Replacement metadata object." },
+                    "status": { "type": ["string", "null"], "enum": ["pending", "completed", null], "description": "Task status." }
+                },
+                "required": ["id"]
+            })),
+        },
+    }
+}
+
+fn delete_todo_def() -> Tool {
+    Tool {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "delete_todo".to_string(),
+            description: "Delete one concrete workflow todo task by id.".to_string(),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Existing workflow task id." }
+                },
+                "required": ["id"]
+            })),
+        },
+    }
+}
 
 fn file_name_label(args: &Value, prefix: &str) -> String {
     let name = args
@@ -383,6 +498,47 @@ fn plugin_label(args: &Value) -> String {
 // ---------------------------------------------------------------------------
 // 核心实现：路径 / 补丁 / 花括号
 // ---------------------------------------------------------------------------
+
+fn create_todo_label(args: &Value) -> String {
+    let count = args
+        .get("tasks")
+        .and_then(|value| value.as_array())
+        .map(|tasks| tasks.len())
+        .unwrap_or(1);
+
+    if count > 1 {
+        format!("Creating {count} Todos")
+    } else {
+        "Creating Todo".to_string()
+    }
+}
+fn list_todos_label(_: &Value) -> String {
+    "Listing Todos".to_string()
+}
+fn update_todo_label(args: &Value) -> String {
+    let id = args
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    if id.is_empty() {
+        "Updating Todo".to_string()
+    } else {
+        format!("Updating Todo {id}")
+    }
+}
+fn delete_todo_label(args: &Value) -> String {
+    let id = args
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    if id.is_empty() {
+        "Deleting Todo".to_string()
+    } else {
+        format!("Deleting Todo {id}")
+    }
+}
 
 fn is_binary_file(path: &Path) -> Result<bool, String> {
     let mut file = fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
@@ -1309,6 +1465,90 @@ fn jerr(msg: impl ToString) -> String {
 // Skill 工具 — 渐进式披露 Tier 2: AI 调用此工具加载 skill 的完整 SKILL.md
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Todo tools
+// ---------------------------------------------------------------------------
+
+fn todo_requires_app_context_impl(_: Value) -> String {
+    jerr("Todo tools require a desktop app session context.")
+}
+
+fn create_todo_impl(app: &AppHandle, args: Value) -> String {
+    let input: crate::workflow::WorkflowTodoCreateToolInput = match serde_json::from_value(args) {
+        Ok(value) => value,
+        Err(error) => return jerr(format!("Argument parse failed: {error}")),
+    };
+
+    match crate::workflow::create_workflow_tasks_from_tool(app, input) {
+        Ok(tasks) => {
+            let count = tasks.len();
+            serde_json::json!({
+                "status": "created",
+                "count": count,
+                "tasks": tasks,
+            })
+            .to_string()
+        }
+        Err(error) => jerr(error),
+    }
+}
+
+fn list_todos_impl(app: &AppHandle, args: Value) -> String {
+    let input: crate::workflow::WorkflowTodoListToolInput = match serde_json::from_value(args) {
+        Ok(value) => value,
+        Err(error) => return jerr(format!("Argument parse failed: {error}")),
+    };
+
+    match crate::workflow::list_workflow_tasks_for_tool(app, input) {
+        Ok(tasks) => {
+            let count = tasks.len();
+            serde_json::json!({
+                "status": "ok",
+                "count": count,
+                "tasks": tasks,
+            })
+            .to_string()
+        }
+        Err(error) => jerr(error),
+    }
+}
+
+fn update_todo_impl(app: &AppHandle, args: Value) -> String {
+    let input: crate::workflow::WorkflowTodoUpdateToolInput = match serde_json::from_value(args) {
+        Ok(value) => value,
+        Err(error) => return jerr(format!("Argument parse failed: {error}")),
+    };
+
+    match crate::workflow::update_workflow_task_from_tool(app, input) {
+        Ok(task) => serde_json::json!({
+            "status": "updated",
+            "task": task,
+        })
+        .to_string(),
+        Err(error) => jerr(error),
+    }
+}
+
+fn delete_todo_impl(app: &AppHandle, args: Value) -> String {
+    let input: crate::workflow::WorkflowTodoDeleteToolInput = match serde_json::from_value(args) {
+        Ok(value) => value,
+        Err(error) => return jerr(format!("Argument parse failed: {error}")),
+    };
+
+    match crate::workflow::delete_workflow_task_from_tool(app, input) {
+        Ok(id) => serde_json::json!({
+            "status": "deleted",
+            "id": id,
+        })
+        .to_string(),
+        Err(error) => jerr(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Skill tools
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct SkillToolInput {
@@ -1375,6 +1615,47 @@ fn plugin_impl(args: Value) -> String {
         "body": body,
     }))
     .unwrap_or_else(|e| jerr(format!("序列化失败: {e}")))
+}
+
+fn send_file_to_weixin_impl(app: AppHandle, session_id: String, args: Value) -> String {
+    let input: SendFileToWeixinInput = match serde_json::from_value(args) {
+        Ok(value) => value,
+        Err(error) => return jerr(format!("参数解析失败: {error}")),
+    };
+    let resolved = match normalize_path(&input.file_path) {
+        Ok(path) => path,
+        Err(error) => return jerr(error),
+    };
+    let metadata = match fs::metadata(&resolved) {
+        Ok(metadata) => metadata,
+        Err(error) => return jerr(format!("无法获取文件信息: {error}")),
+    };
+    if !metadata.is_file() {
+        return jerr("只能发送普通文件，不能发送目录");
+    }
+    if metadata.len() == 0 {
+        return jerr("文件为空，无法发送到微信");
+    }
+
+    let file_path = resolved.to_string_lossy().into_owned();
+    if let Err(error) =
+        crate::artifacts::record_weixin_send_file_artifact(&app, &session_id, &file_path)
+    {
+        return jerr(format!("登记微信待发送文件失败: {error}"));
+    }
+
+    let file_name = resolved
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_path.clone());
+
+    serde_json::to_string(&serde_json::json!({
+        "status": "queued_for_weixin_delivery",
+        "file_path": file_path,
+        "file_name": file_name,
+        "size": metadata.len(),
+    }))
+    .unwrap_or_else(|error| jerr(format!("序列化失败: {error}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1745,38 @@ fn build_tool_metas() -> Vec<ToolMeta> {
             expandable: true,
         },
         ToolMeta {
+            name: "create_todo".into(),
+            display_name: "Create Todo".into(),
+            definition: create_todo_def(),
+            realization: Box::new(todo_requires_app_context_impl),
+            label_fn: Box::new(create_todo_label),
+            expandable: true,
+        },
+        ToolMeta {
+            name: "list_todos".into(),
+            display_name: "List Todos".into(),
+            definition: list_todos_def(),
+            realization: Box::new(todo_requires_app_context_impl),
+            label_fn: Box::new(list_todos_label),
+            expandable: true,
+        },
+        ToolMeta {
+            name: "update_todo".into(),
+            display_name: "Update Todo".into(),
+            definition: update_todo_def(),
+            realization: Box::new(todo_requires_app_context_impl),
+            label_fn: Box::new(update_todo_label),
+            expandable: true,
+        },
+        ToolMeta {
+            name: "delete_todo".into(),
+            display_name: "Delete Todo".into(),
+            definition: delete_todo_def(),
+            realization: Box::new(todo_requires_app_context_impl),
+            label_fn: Box::new(delete_todo_label),
+            expandable: false,
+        },
+        ToolMeta {
             name: "skill".into(),
             display_name: "加载技能".into(),
             definition: skill_def(),
@@ -1515,23 +1828,58 @@ pub fn build_tools_for_session(
         let ToolMeta {
             name, realization, ..
         } = meta;
-        if name == "edit_file" {
-            let app = app.clone();
-            let session_id = session_id.clone();
-            realize.insert(
-                name,
-                Box::new(move |args| {
-                    let result = realization(args);
-                    if let Err(error) =
-                        crate::artifacts::record_edit_file_artifact(&app, &session_id, &result)
-                    {
-                        eprintln!("[artifacts] record edit_file failed: {error}");
-                    }
-                    result
-                }),
-            );
-        } else {
-            realize.insert(name, realization);
+        match name.as_str() {
+            "edit_file" => {
+                let app = app.clone();
+                let session_id = session_id.clone();
+                realize.insert(
+                    name,
+                    Box::new(move |args| {
+                        let result = realization(args);
+                        if let Err(error) =
+                            crate::artifacts::record_edit_file_artifact(&app, &session_id, &result)
+                        {
+                            eprintln!("[artifacts] record edit_file failed: {error}");
+                        }
+                        result
+                    }),
+                );
+            }
+            "write_file" => {
+                let app = app.clone();
+                let session_id = session_id.clone();
+                realize.insert(
+                    name,
+                    Box::new(move |args| {
+                        let result = realization(args);
+                        if let Err(error) =
+                            crate::artifacts::record_write_file_artifact(&app, &session_id, &result)
+                        {
+                            eprintln!("[artifacts] record write_file failed: {error}");
+                        }
+                        result
+                    }),
+                );
+            }
+            "create_todo" => {
+                let app = app.clone();
+                realize.insert(name, Box::new(move |args| create_todo_impl(&app, args)));
+            }
+            "list_todos" => {
+                let app = app.clone();
+                realize.insert(name, Box::new(move |args| list_todos_impl(&app, args)));
+            }
+            "update_todo" => {
+                let app = app.clone();
+                realize.insert(name, Box::new(move |args| update_todo_impl(&app, args)));
+            }
+            "delete_todo" => {
+                let app = app.clone();
+                realize.insert(name, Box::new(move |args| delete_todo_impl(&app, args)));
+            }
+            _ => {
+                realize.insert(name, realization);
+            }
         }
     }
 
@@ -1555,6 +1903,22 @@ pub fn build_weixin_safe_tools() -> (
         realize.insert(meta.name, meta.realization);
     }
 
+    (tools, realize)
+}
+
+pub fn build_weixin_full_tools_for_session(
+    app: AppHandle,
+    session_id: String,
+) -> (
+    Vec<Tool>,
+    HashMap<String, Box<dyn Fn(Value) -> String + Send + Sync>>,
+) {
+    let (mut tools, mut realize) = build_tools_for_session(app.clone(), session_id.clone());
+    tools.push(send_file_to_weixin_def());
+    realize.insert(
+        "send_file_to_weixin".to_string(),
+        Box::new(move |args| send_file_to_weixin_impl(app.clone(), session_id.clone(), args)),
+    );
     (tools, realize)
 }
 

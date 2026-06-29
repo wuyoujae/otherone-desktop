@@ -34,6 +34,19 @@ export async function migrateStorageSettingsToStorage(storage: StorageSettings) 
   });
 }
 
+export async function clearAllOtheroneDataFromStorage() {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AppSettings>('clear_all_otherone_data', {
+    request: {
+      acknowledgedDataLossRisk: true,
+    },
+  });
+}
+
 export async function selectDirectoryFromSystem() {
   if (!isTauriRuntime()) {
     return null;

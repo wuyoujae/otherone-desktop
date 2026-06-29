@@ -20,27 +20,29 @@ export async function loadWorkflowTasksForRangeFromStorage(startDate: string, en
   return invoke<WorkflowTask[]>('list_workflow_tasks_for_range', { request: { startDate, endDate } });
 }
 
-export async function createWorkflowTaskInStorage(prompt: string) {
+export async function createWorkflowTaskInStorage(prompt: string, modelId = '') {
   const taskPrompt = prompt.trim();
+  const taskModelId = modelId.trim();
 
   if (!taskPrompt || !isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WorkflowTask>('create_workflow_task', { request: { prompt: taskPrompt } });
+  return invoke<WorkflowTask>('create_workflow_task', { request: { prompt: taskPrompt, modelId: taskModelId || null } });
 }
 
-export async function updateWorkflowTaskInStorage(id: string, prompt: string) {
+export async function updateWorkflowTaskInStorage(id: string, prompt: string, modelId = '') {
   const taskId = id.trim();
   const taskPrompt = prompt.trim();
+  const taskModelId = modelId.trim();
 
   if (!taskId || !taskPrompt || !isTauriRuntime()) {
     return [];
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WorkflowTask[]>('update_workflow_task', { request: { id: taskId, prompt: taskPrompt } });
+  return invoke<WorkflowTask[]>('update_workflow_task', { request: { id: taskId, prompt: taskPrompt, modelId: taskModelId || null } });
 }
 
 export async function updateWorkflowTaskStatusInStorage(id: string, status: WorkflowTaskStatus) {

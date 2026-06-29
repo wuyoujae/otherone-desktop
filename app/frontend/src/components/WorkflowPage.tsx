@@ -10,17 +10,23 @@ import {
 } from 'lucide-react';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { loadWorkflowTasksForRangeFromStorage } from '../services/workflowStorage';
+import type { ModelOption } from '../types/apiConfig';
 import type { WorkflowTask } from '../types/workflow';
 import { resolveWorkflowTaskToneClasses } from '../utils/workflowTaskColors';
+import { CustomSelect } from './CustomControls';
 import { TaskView } from './TaskView';
 
 const iconSize = { width: 16, height: 16 };
+const noWorkflowModelOption = { label: '未配置 Todo 模型', value: 'none' };
 
 type WorkflowView = 'calendar' | 'task';
 
 type WorkflowPageProps = {
+  modelOptions: ModelOption[];
   onNotice?: (type: 'success' | 'warn' | 'fail' | 'info', title: string, description?: string) => void;
   onClose: () => void;
+  onWorkflowModelChange: (modelId: string) => void;
+  workflowModelId: string;
 };
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -278,7 +284,13 @@ function DatePicker({ anchorRef, onChange, onClose, open, selected }: DatePicker
 
 // ----- Main component -----
 
-export function WorkflowPage({ onClose, onNotice }: WorkflowPageProps) {
+export function WorkflowPage({
+  modelOptions,
+  onClose,
+  onNotice,
+  onWorkflowModelChange,
+  workflowModelId,
+}: WorkflowPageProps) {
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState(today);
   const [viewMode, setViewMode] = useState<WorkflowView>('calendar');
@@ -293,6 +305,12 @@ export function WorkflowPage({ onClose, onNotice }: WorkflowPageProps) {
   const [calendarPopoverClosing, setCalendarPopoverClosing] = useState(false);
   const dateButtonRef = useRef<HTMLButtonElement | null>(null);
   const calendarPopoverCloseTimerRef = useRef<number | null>(null);
+  const workflowModelOptions = modelOptions.length
+    ? modelOptions.map((model) => ({ label: model.label, value: model.id }))
+    : [noWorkflowModelOption];
+  const selectedWorkflowModelId = workflowModelOptions.some((option) => option.value === workflowModelId)
+    ? workflowModelId
+    : workflowModelOptions[0].value;
 
   // Compute the 7 days centered on the selected date
   const visibleDays = useMemo(() => {
@@ -496,6 +514,14 @@ export function WorkflowPage({ onClose, onNotice }: WorkflowPageProps) {
         </div>
 
         <div className="workflow-nav-right">
+          <div className="workflow-model-control">
+            <CustomSelect
+              label="Todo AI 模型"
+              options={workflowModelOptions}
+              value={selectedWorkflowModelId}
+              onChange={(value) => onWorkflowModelChange(value === 'none' ? '' : value)}
+            />
+          </div>
           <button
             className="workflow-today-btn"
             type="button"
@@ -611,6 +637,7 @@ export function WorkflowPage({ onClose, onNotice }: WorkflowPageProps) {
           selectedTaskId={selectedTaskRequestId}
           newTaskRequestId={newTaskRequestId}
           onNotice={onNotice}
+          workflowModelId={selectedWorkflowModelId === 'none' ? '' : selectedWorkflowModelId}
         />
       )}
 

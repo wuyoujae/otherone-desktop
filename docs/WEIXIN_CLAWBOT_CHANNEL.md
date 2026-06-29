@@ -5,7 +5,7 @@
 Weixin ClawBot is implemented as a backend-owned external message channel.
 It is not installed through the existing Agent plugin registry.
 
-The first version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-sender Agent sessions, short-window multi-message batching, mid-run prompt insertion through the interactive Agent command sender, safe Agent invocation, text replies, and basic runtime diagnostics.
+The current version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-message Agent runs, full desktop Agent tools, text replies, generated-file attachment delivery, and basic runtime diagnostics.
 
 Reference implementation:
 
@@ -18,7 +18,8 @@ Reference implementation:
 - Place it after `个性化`; it is not content inside the `个性化` tab.
 - Keep visual style consistent with existing operational pages such as `WorkflowPage` and `PluginsPage`.
 - Do not require users to install OpenClaw Gateway for this first-party integration.
-- First version is text-only direct chat.
+- Weixin ClawBot uses the normal desktop Agent tool surface by default.
+- File delivery is limited to files created/edited by the current Agent run or explicitly marked with `send_file_to_weixin`.
 
 ## Implemented Paths
 
@@ -49,15 +50,19 @@ Backend:
   - Converts HTTP/SVG QR image content into frontend-safe image data URLs when possible.
   - Long-poll runtime.
   - Inbound text parsing.
-  - Per-sender 3-second text batching before Agent invocation.
-  - Persists the polling cursor only after a fetched batch has been queued.
-  - Active Agent command sender, cancel tracking, and queued-prompt ACK tracking for mid-run Weixin prompt insertion and reset cleanup.
-  - Agent session mapping with stale-history rotation when old localfile history has invalid tool-call ordering.
+  - Detects iLink session timeout/token expiry and returns the account to QR login instead of retrying stale credentials forever.
+  - Immediate per-message Agent invocation that replies with the same inbound `context_token`.
+  - Persists the polling cursor only after fetched messages have been accepted locally.
+  - Active Agent cancel tracking for reset/session-expiry cleanup.
+  - Per-sender Agent session reuse within the current ClawBot connection, with reset/session-expiry clearing the mapping.
   - `getconfig`, `sendtyping`, and retried text `sendmessage`.
+  - Weixin CDN file attachment upload and outbound `FILE` item delivery for current-run artifacts.
 - `app/frontend/src-tauri/src/chat.rs`
-  - Adds `start_channel_agent_run` and `enqueue_channel_agent_prompts` for non-UI external channel multi-prompt calls.
+  - Adds `start_channel_agent_run` for non-UI external channel multi-prompt calls.
 - `app/frontend/src-tauri/src/tools.rs`
-  - Adds `build_weixin_safe_tools`.
+  - Provides the normal desktop tool registry used by both desktop chat and Weixin channel runs.
+  - Records successful `write_file` and `edit_file` outputs as file artifacts for session-scoped delivery.
+  - Adds a Weixin-only `send_file_to_weixin` tool for existing files and files created by shell/PowerShell/REPL/Python/Office tooling.
 - `app/frontend/src-tauri/src/main.rs`
   - Registers commands and initializes tables.
 
@@ -79,20 +84,17 @@ Backend:
 4. User scans and confirms in Weixin.
 5. Backend stores token/base URL and can start long polling.
 6. Inbound text messages arrive from `getupdates`.
-7. Backend records each inbound message and queues it by `(account_id, from_user_id)`.
-8. Backend persists `get_updates_buf` only after all messages from that payload have been accepted into the local queue.
-9. The sender queue waits for a 3-second quiet window; new text from the same sender refreshes the window.
-10. Backend maps the sender to an `otherone-agent` session.
-11. Backend requests typing config and sends typing status `1`.
-12. Backend starts an interactive Weixin-safe Agent run through `start_channel_agent_run`.
-13. For multi-message batches, each Weixin text is written as its own `user` entry before Agent invocation.
-14. If an old mapped Agent session fails because its localfile history contains unmatched `tool_calls`, backend rotates that sender to a fresh session id and retries once.
-15. If more text from the same sender arrives while the Agent is still active, the backend sends `AgentStreamCommand::EnqueueUserPrompts` through the active command sender and keeps that batch in an in-flight list.
-16. The framework persists queued prompts at safe provider-ordering boundaries and emits `queued_user_prompts`; only then does backend advance the reply `context_token` to that inserted batch.
-17. Any in-flight batch that is not confirmed by `queued_user_prompts` is put back into the pending queue for the next Agent run.
-18. Backend sends one final assistant text with the latest confirmed inbound `context_token`; transient `sendmessage` failures are retried, and nested iLink business errors such as `base_resp.ret` are treated as failures.
-19. Backend sends typing status `2` and records an event.
-20. Reset increments the in-memory channel generation, clears queued/active sender state, cancels active Agent runs, deletes sender-session mappings, and drops stale delayed batches so the next inbound message creates a fresh Agent session.
+7. Backend records each inbound message and accepts it for local processing.
+8. Backend persists `get_updates_buf` only after all messages from that payload have been accepted locally.
+9. Backend reuses the sender's `otherone-agent` session for the current ClawBot connection, or creates one if none exists.
+10. Backend requests typing config and sends typing status `1`.
+11. Backend starts a full-desktop-tool Agent run through `start_channel_agent_run`.
+12. If the Agent run does not finish within the channel timeout, backend cancels it and sends a fallback instead of leaving Weixin in typing state forever.
+13. Backend sends one final assistant text with that inbound message's exact `context_token`; transient `sendmessage` failures are retried, and nested iLink business errors such as `base_resp.ret` are treated as failures.
+14. Backend collects file artifacts created, updated, or explicitly attached by that Agent run and sends each eligible file as a Weixin file attachment.
+15. Backend sends typing status `2` and records an event.
+16. If iLink returns session timeout/token expiry, backend clears the stored token, marks the account disconnected, and requires a fresh QR login.
+17. Reset increments the in-memory channel generation, cancels active Agent runs, deletes sender-session mappings, and drops stale delayed work so the next inbound message starts a fresh Agent session.
 
 ## QR Payload Rules
 
@@ -152,23 +154,50 @@ First-version compromise:
 - `bot_token` is stored in SQLite, matching the current local API-key storage posture.
 - The frontend never receives `bot_token`, `Authorization`, raw request bodies, or full raw user IDs.
 
-## Agent Safety
+## Agent Permissions
 
-Weixin-originated Agent runs do not use the full desktop chat tool surface.
+Weixin-originated Agent runs use the same full desktop tool surface as normal OtherOne chat.
 
-Allowed tools:
+Included capabilities:
 
-- `web_fetch`
-- `web_search`
-- `skill`
-- `plugin_tool`
+- local file read/write/edit
+- file and content search
+- web fetch/search
+- shell and PowerShell execution
+- REPL execution
+- Skill and plugin loading
 
-Not allowed by default:
+Current file-delivery boundary:
 
-- shell execution
-- file write/edit
-- local filesystem reads
-- desktop-only artifact capture
+- only files created or edited by the current Agent run are sent back to Weixin;
+- existing local files are sent only when the Agent explicitly calls `send_file_to_weixin`;
+- arbitrary local paths mentioned in model text are not auto-sent unless they are marked by that tool;
+- first file-delivery version sends all eligible outputs as regular Weixin file attachments, not image/video preview messages;
+- files larger than 25 MB are skipped and recorded as outbound errors.
+
+Risk:
+
+- any Weixin sender who can message the connected account can indirectly trigger local tools through the model;
+- future allowlist or confirmation controls should be added before using this channel for untrusted senders.
+
+## File Attachment Delivery
+
+The Weixin file-send path follows `@tencent-weixin/openclaw-weixin@2.4.6`:
+
+1. Read the local artifact file and compute plaintext size and MD5.
+2. Generate a random `filekey` and AES-128 key.
+3. Call `/ilink/bot/getuploadurl` with `media_type=3` (`FILE`), plaintext metadata, ciphertext size, `no_need_thumb=true`, and hex AES key.
+4. Encrypt the file with AES-128-ECB and PKCS7 padding.
+5. POST ciphertext to `upload_full_url`, or to the CDN fallback URL built from `upload_param` and `filekey`.
+6. Read `x-encrypted-param` from the CDN response.
+7. Send one `sendmessage` request with a single `item_list` entry of type `4` (`FILE`) and `file_item.media`.
+
+Eligibility rules:
+
+- Successful `write_file` / `edit_file` artifacts are automatically eligible for delivery.
+- Files created by shell commands, Python scripts, Office tools, or other external processes must be marked with `send_file_to_weixin` before they can be delivered.
+- If the user asks to send an existing desktop/local file, the Agent should resolve the path and call `send_file_to_weixin` with the absolute path.
+- Delivery sends the text reply first, then sends each file as a separate Weixin file message.
 
 ## Dependencies
 
@@ -177,6 +206,15 @@ Not allowed by default:
   - Rationale: QR generation is a correctness-heavy standard with encoding and error correction; a mature library is safer than a custom implementation.
 - `@types/qrcode@^1.5.6`
   - Purpose: TypeScript type coverage for the frontend wrapper.
+- `aes = "0.8"` and `ecb = "0.1"`
+  - Purpose: implement Weixin CDN AES-128-ECB/PKCS7 file encryption.
+  - Rationale: CDN media encryption must match the official protocol; use maintained RustCrypto crates instead of custom crypto primitives.
+- `getrandom = "0.2"`
+  - Purpose: generate file upload `filekey` and AES keys.
+  - Rationale: protocol keys require OS-backed randomness.
+- `md5 = "0.7"`
+  - Purpose: compute `rawfilemd5` required by `getuploadurl`.
+  - Rationale: this is a Weixin protocol checksum field, not a security boundary.
 
 ## First-Version Done
 
@@ -191,19 +229,24 @@ Not allowed by default:
 - [x] Add login status polling with redirect and verify-code support.
 - [x] Add long-poll runtime with start/stop guard.
 - [x] Add text inbound parsing and current `context_token` capture.
-- [x] Add per-sender Agent session mapping.
-- [x] Add Weixin-safe Agent invocation helper.
-- [x] Add per-sender 3-second text batching for rapid Weixin messages.
-- [x] Send multi-message Weixin batches as separate Agent user prompts.
-- [x] Insert mid-run Weixin messages into the active Agent run.
+- [x] Add per-message Agent session creation.
+- [x] Add external channel Agent invocation helper.
+- [x] Process each inbound Weixin text immediately with its own `context_token`.
 - [x] Add sendtyping before/after Agent runs.
 - [x] Add text sendmessage with SDK-compatible fields.
+- [x] Use the normal full desktop tool surface for Weixin Agent runs.
+- [x] Record current-run `write_file` and `edit_file` artifacts.
+- [x] Add `send_file_to_weixin` for existing local files and externally generated files.
+- [x] Send current-run generated or edited files as Weixin file attachments after the text reply.
+- [x] Generate a unique `msg.client_id` for every outbound reply; repeated IDs can return HTTP 200 with `{}` while Weixin silently drops the message.
 - [x] Add basic runtime events for UI diagnostics.
-- [x] Add reset flow for clearing token, polling cursor, pending queue, active Agent runs, and sender session mapping before reconnecting.
-- [x] Persist polling cursor only after fetched messages are queued.
+- [x] Add reset flow for clearing token, polling cursor, stale local work, active Agent runs, and sender session mapping before reconnecting.
+- [x] Persist polling cursor only after fetched messages are accepted locally.
 - [x] Retry outbound Weixin text sends before recording delivery failure.
-- [x] Keep mid-run inserts pending until `queued_user_prompts` confirms framework persistence.
+- [x] Avoid debounce/batching so replies follow the upstream sample's one-message/one-token flow.
 - [x] Detect nested iLink business errors before marking outbound replies as sent.
+- [x] Stop stale-token polling on iLink session timeout and return to QR login.
+- [x] Add Weixin Agent run timeout to prevent permanent typing state.
 - [x] Refresh the Weixin page layout and remove the recent-message and safety-boundary cards.
 - [x] Simplify the Weixin page into one primary next-step action plus contextual reset.
 - [x] Rotate stale Agent sessions when old localfile history has invalid tool-call ordering.
@@ -218,7 +261,7 @@ Not allowed by default:
 - [ ] Support message splitting for long replies.
 - [ ] Support image input and image output.
 - [ ] Support voice transcription and voice replies.
-- [ ] Support file upload/download through Weixin CDN.
+- [ ] Support inbound Weixin file download and model ingestion.
 - [ ] Add group-chat detection and an explicit group policy.
 - [ ] Add richer delivery/error telemetry.
 - [ ] Add rate limiting and abuse controls per sender.

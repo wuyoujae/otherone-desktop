@@ -8,6 +8,7 @@ import {
   FileText,
   Flag,
   Loader2,
+  ListFilter,
   MessageSquare,
   Pencil,
   Plus,
@@ -22,6 +23,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   createWorkflowTaskInStorage,
   deleteWorkflowTaskInStorage,
+  loadWorkflowTasksFromStorage,
   loadWorkflowTasksForRangeFromStorage,
   updateWorkflowTaskInStorage,
   updateWorkflowTaskStatusInStorage,
@@ -43,6 +45,7 @@ type TaskViewProps = {
   onNotice?: (type: WorkflowNoticeKind, title: string, description?: string) => void;
   selectedDate: Date;
   selectedTaskId?: string | null;
+  workflowModelId?: string;
 };
 
 type WorkflowTaskMetadata = {
@@ -226,7 +229,13 @@ function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selectedTaskId = null }: TaskViewProps) {
+export function TaskView({
+  newTaskRequestId = 0,
+  onNotice,
+  selectedDate,
+  selectedTaskId = null,
+  workflowModelId = '',
+}: TaskViewProps) {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [paramsOpen, setParamsOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -236,20 +245,28 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
   const [moreInfoOpen, setMoreInfoOpen] = useState(false);
   const [updatingTaskIds, setUpdatingTaskIds] = useState<Set<string>>(() => new Set());
   const [deletingTaskIds, setDeletingTaskIds] = useState<Set<string>>(() => new Set());
+  const [showAllTasks, setShowAllTasks] = useState(false);
   const selectedDateKey = useMemo(() => formatDateKey(selectedDate), [selectedDate]);
+  const loadVisibleTasks = useCallback(
+    () => (showAllTasks ? loadWorkflowTasksFromStorage() : loadWorkflowTasksForRangeFromStorage(selectedDateKey, selectedDateKey)),
+    [selectedDateKey, showAllTasks],
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     setIsLoadingTasks(true);
-    loadWorkflowTasksForRangeFromStorage(selectedDateKey, selectedDateKey)
+    loadVisibleTasks()
       .then((loadedTasks) => {
         if (cancelled) {
           return;
         }
 
         setTasks(loadedTasks);
-        setActiveTaskId((current) => selectedTaskId ?? current ?? null);
+        setActiveTaskId((current) => {
+          const nextTaskId = selectedTaskId ?? current;
+          return nextTaskId && loadedTasks.some((task) => task.id === nextTaskId) ? nextTaskId : null;
+        });
       })
       .catch((error) => {
         if (!cancelled) {
@@ -265,7 +282,7 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     return () => {
       cancelled = true;
     };
-  }, [newTaskRequestId, onNotice, selectedDateKey, selectedTaskId]);
+  }, [loadVisibleTasks, newTaskRequestId, onNotice, selectedTaskId]);
 
   const activeTask = useMemo(
     () => (activeTaskId ? tasks.find((task) => task.id === activeTaskId) ?? null : null),
@@ -376,14 +393,14 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     setIsCreatingTask(true);
 
     try {
-      const createdTask = await createWorkflowTaskInStorage(taskPrompt);
+      const createdTask = await createWorkflowTaskInStorage(taskPrompt, workflowModelId);
 
       if (!createdTask) {
         onNotice?.('warn', '无法创建任务', '当前环境无法保存任务，请在桌面应用中使用。');
         return;
       }
 
-      const refreshedTasks = await loadWorkflowTasksForRangeFromStorage(selectedDateKey, selectedDateKey);
+      const refreshedTasks = await loadVisibleTasks();
       setTasks(refreshedTasks);
       setActiveTaskId(refreshedTasks.some((task) => task.id === createdTask.id) ? createdTask.id : null);
       setPrompt('');
@@ -393,7 +410,7 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     } finally {
       setIsCreatingTask(false);
     }
-  }, [isCreatingTask, onNotice, prompt, selectedDateKey]);
+  }, [isCreatingTask, loadVisibleTasks, onNotice, prompt, workflowModelId]);
 
   const updateTask = useCallback(async () => {
     const taskPrompt = prompt.trim();
@@ -405,14 +422,14 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     setIsCreatingTask(true);
 
     try {
-      const updatedTasks = await updateWorkflowTaskInStorage(activeTask.id, taskPrompt);
+      const updatedTasks = await updateWorkflowTaskInStorage(activeTask.id, taskPrompt, workflowModelId);
 
       if (updatedTasks.length === 0) {
         onNotice?.('warn', '无法修改任务', '当前环境无法保存任务修改，请在桌面应用中使用。');
         return;
       }
 
-      const refreshedTasks = await loadWorkflowTasksForRangeFromStorage(selectedDateKey, selectedDateKey);
+      const refreshedTasks = await loadVisibleTasks();
       const nextActiveTask = updatedTasks.find((task) => refreshedTasks.some((item) => item.id === task.id));
 
       setTasks(refreshedTasks);
@@ -425,7 +442,7 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     } finally {
       setIsCreatingTask(false);
     }
-  }, [activeTask, isCreatingTask, onNotice, prompt, selectedDateKey]);
+  }, [activeTask, isCreatingTask, loadVisibleTasks, onNotice, prompt, workflowModelId]);
 
   const submitTaskPrompt = useCallback(async () => {
     const taskPrompt = prompt.trim();
@@ -449,28 +466,43 @@ export function TaskView({ newTaskRequestId = 0, onNotice, selectedDate, selecte
     ? formatTaskTime(taskStartAt(activeTask, activeTaskMetadata)!)
     : '未定时间';
 
+  const sidebarTitle = showAllTasks ? '全部任务' : '今日任务';
+  const sidebarCountTitle = showAllTasks ? '全部 Todo 任务视图' : `${selectedDateLabel} 的任务视图`;
+
   return (
     <div className="task-view">
       <aside className="task-sidebar">
         <div className="task-sidebar-header">
           <div className="task-sidebar-heading">
-            <span className="task-sidebar-title">今日任务</span>
-            <span className="task-sidebar-count" title={`${selectedDateLabel} 的任务视图`}>
+            <span className="task-sidebar-title">{sidebarTitle}</span>
+            <span className="task-sidebar-count" title={sidebarCountTitle}>
               {isLoadingTasks ? '读取中' : `${tasks.length} 项`}
             </span>
           </div>
-          <button
-            className={`task-sidebar-add-btn ${activeTaskId === null ? 'active' : ''}`}
-            type="button"
-            title="新建任务"
-            aria-label="新建任务"
-            onClick={() => {
-              setActiveTaskId(null);
-              setPrompt('');
-            }}
-          >
-            <Plus style={{ width: 15, height: 15 }} />
-          </button>
+          <div className="task-sidebar-actions">
+            <button
+              aria-label={showAllTasks ? '只显示今日任务' : '显示全部任务'}
+              aria-pressed={showAllTasks}
+              className={`task-sidebar-filter-btn ${showAllTasks ? 'active' : ''}`}
+              title={showAllTasks ? '只显示今日任务' : '显示全部任务'}
+              type="button"
+              onClick={() => setShowAllTasks((current) => !current)}
+            >
+              <ListFilter style={{ width: 15, height: 15 }} />
+            </button>
+            <button
+              className={`task-sidebar-add-btn ${activeTaskId === null ? 'active' : ''}`}
+              type="button"
+              title="新建任务"
+              aria-label="新建任务"
+              onClick={() => {
+                setActiveTaskId(null);
+                setPrompt('');
+              }}
+            >
+              <Plus style={{ width: 15, height: 15 }} />
+            </button>
+          </div>
         </div>
 
         <div className="task-sidebar-list">

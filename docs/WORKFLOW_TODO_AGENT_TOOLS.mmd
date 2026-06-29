@@ -1,0 +1,25 @@
+flowchart TD
+  A["Normal chat Agent"] --> B["build_tools_for_session"]
+  B --> C["Todo CRUD tool definitions"]
+  C --> C1["create_todo"]
+  C --> C2["list_todos"]
+  C --> C3["update_todo"]
+  C --> C4["delete_todo"]
+
+  C1 --> D["workflow::create_workflow_tasks_from_tool"]
+  C2 --> E["workflow::list_workflow_tasks_for_tool"]
+  C3 --> F["workflow::update_workflow_task_from_tool"]
+  C4 --> G["workflow::delete_workflow_task_from_tool"]
+
+  D --> H["workflow_tasks"]
+  E --> H
+  F --> H
+  G --> H
+
+  I["Key decision"] --> J["Tools accept already-normalized concrete task data"]
+  I --> K["Recurring requests must be expanded by the Agent into multiple concrete tasks"]
+  I --> L["No duplicate Todo storage path"]
+  I --> M["Existing Workflow page reads the same saved rows"]
+
+  N["Safety"] --> O["update_todo changes one concrete task"]
+  N --> P["For one task becoming many recurring tasks: delete_todo then create_todo"]

@@ -1,11 +1,19 @@
-use crate::{chat, storage};
+use crate::{artifacts, chat, storage};
+use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyInit};
+use aes::Aes128;
 use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::blocking::{Client, RequestBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::fs;
+#[cfg(debug_assertions)]
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
+#[cfg(debug_assertions)]
+use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
@@ -17,11 +25,33 @@ const DEFAULT_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION: &str = "2.4.3";
 const ILINK_APP_ID: &str = "bot";
 const ILINK_APP_CLIENT_VERSION: &str = "132099";
-const BOT_AGENT: &str = "OtherOne/0.1.0 (weixin-clawbot)";
-const MESSAGE_BATCH_DELAY_MS: u64 = 3_000;
-const MESSAGE_ACTIVE_RETRY_DELAY_MS: u64 = 1_000;
+const BOT_AGENT: &str = "weixin-ClawBot-API/1.0.1 (python)";
 const MESSAGE_SEND_RETRY_ATTEMPTS: usize = 3;
 const MESSAGE_SEND_RETRY_DELAY_MS: u64 = 800;
+const CHANNEL_AGENT_RESULT_TIMEOUT_SECS: u64 = 120;
+const WEIXIN_CDN_BASE_URL: &str = "https://novac2c.cdn.weixin.qq.com/c2c";
+const WEIXIN_FILE_MEDIA_TYPE: i64 = 3;
+const WEIXIN_FILE_ITEM_TYPE: i64 = 4;
+const MAX_WEIXIN_FILE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+const CDN_UPLOAD_RETRY_ATTEMPTS: usize = 3;
+
+#[cfg(debug_assertions)]
+pub(crate) fn weixin_debug(message: impl AsRef<str>) {
+    let line = format!(
+        "[weixin_clawbot][{}] {}",
+        Utc::now().to_rfc3339(),
+        message.as_ref()
+    );
+    eprintln!("{line}");
+
+    let path = std::env::temp_dir().join("otherone-weixin-clawbot-debug.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn weixin_debug(_message: impl AsRef<str>) {}
 
 static RUNTIME: LazyLock<Mutex<Option<WeixinRuntime>>> = LazyLock::new(|| Mutex::new(None));
 static MESSAGE_STATE: LazyLock<Mutex<WeixinMessageState>> =
@@ -41,10 +71,8 @@ struct WeixinMessageState {
 }
 
 struct ActiveWeixinRun {
-    commands: Option<chat::ChannelAgentCommandSender>,
     cancel: Option<chat::ChannelAgentCancelSender>,
     context_token: String,
-    inflight_inserts: VecDeque<PendingWeixinBatch>,
     reset_generation: u64,
 }
 
@@ -53,7 +81,6 @@ struct PendingWeixinBatch {
     from_user_id: String,
     context_token: String,
     messages: Vec<IncomingText>,
-    generation: u64,
     reset_generation: u64,
 }
 
@@ -103,6 +130,13 @@ struct GetUpdatesPayload {
     get_updates_buf: String,
     timeout_ms: Option<u64>,
     messages: Vec<IncomingText>,
+}
+
+#[derive(Debug, Clone)]
+struct UploadedWeixinFile {
+    download_encrypted_query_param: String,
+    aeskey_hex: String,
+    file_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +241,46 @@ pub(crate) fn init_weixin_clawbot_database(conn: &Connection) -> Result<(), Stri
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn reset_weixin_runtime_state() -> Result<(), String> {
+    {
+        let mut runtime = RUNTIME
+            .lock()
+            .map_err(|_| "无法锁定微信 ClawBot 运行状态。".to_string())?;
+        if let Some(mut current) = runtime.take() {
+            current.stop.store(true, Ordering::SeqCst);
+            if current
+                .handle
+                .as_ref()
+                .map(|handle| handle.is_finished())
+                .unwrap_or(false)
+            {
+                if let Some(handle) = current.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+    }
+
+    let active_cancels = {
+        let mut state = MESSAGE_STATE
+            .lock()
+            .map_err(|_| "无法锁定微信消息队列。".to_string())?;
+        state.pending.clear();
+        state.reset_generation = state.reset_generation.saturating_add(1);
+        state
+            .active
+            .drain()
+            .filter_map(|(_, mut run)| run.cancel.take())
+            .collect::<Vec<_>>()
+    };
+
+    for cancel in active_cancels {
+        let _ = cancel.send(());
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn weixin_clawbot_status(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
     build_status(&app)
@@ -214,6 +288,7 @@ pub fn weixin_clawbot_status(app: AppHandle) -> Result<WeixinClawbotStatus, Stri
 
 #[tauri::command]
 pub async fn weixin_clawbot_begin_login(app: AppHandle) -> Result<WeixinLoginQr, String> {
+    weixin_debug("command begin_login");
     tauri::async_runtime::spawn_blocking(move || begin_login_blocking(app))
         .await
         .map_err(|error| error.to_string())?
@@ -231,12 +306,22 @@ fn begin_login_blocking(app: AppHandle) -> Result<WeixinLoginQr, String> {
         .filter(|account| !account.bot_token.trim().is_empty())
         .map(|account| vec![account.bot_token.clone()])
         .unwrap_or_default();
+    weixin_debug(format!(
+        "begin_login base_url={} existing_token_count={}",
+        base_url,
+        local_token_list.len()
+    ));
 
     let client = IlinkClient::new(
         &base_url,
         existing.as_ref().map(|account| account.bot_token.as_str()),
     )?;
     let qr = client.fetch_login_qr(local_token_list)?;
+    weixin_debug(format!(
+        "begin_login qr received qrcode_len={} image_len={}",
+        qr.qrcode.chars().count(),
+        qr.qrcode_img_content.chars().count()
+    ));
 
     upsert_login_pending(&conn, &base_url)?;
 
@@ -253,6 +338,15 @@ pub async fn weixin_clawbot_check_login(
     app: AppHandle,
     request: WeixinLoginCheckRequest,
 ) -> Result<WeixinLoginCheckResponse, String> {
+    weixin_debug(format!(
+        "command check_login qrcode_len={} base_url={}",
+        request.qrcode.chars().count(),
+        request
+            .base_url
+            .as_deref()
+            .map(normalize_base_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+    ));
     tauri::async_runtime::spawn_blocking(move || check_login_blocking(app, request))
         .await
         .map_err(|error| error.to_string())?
@@ -269,6 +363,22 @@ fn check_login_blocking(
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
     let client = IlinkClient::new(&base_url, None)?;
     let login = client.check_login_status(&request.qrcode, request.verify_code.as_deref())?;
+    weixin_debug(format!(
+        "check_login status={} token_present={} bot_user={} ilink_user={} redirect_base={}",
+        login.status,
+        login.bot_token.is_some(),
+        login
+            .bot_user_id
+            .as_deref()
+            .map(mask_weixin_id)
+            .unwrap_or_default(),
+        login
+            .ilink_user_id
+            .as_deref()
+            .map(mask_weixin_id)
+            .unwrap_or_default(),
+        login.redirect_base.clone().unwrap_or_default()
+    ));
     let effective_base_url = login
         .base_url
         .clone()
@@ -323,9 +433,17 @@ fn check_login_blocking(
 
 #[tauri::command]
 pub fn weixin_clawbot_start(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
+    weixin_debug("command start");
     let conn = open_weixin_db(&app)?;
     let account = load_account_from_conn(&conn, DEFAULT_ACCOUNT_ID)?
         .ok_or_else(|| "请先扫码连接微信 ClawBot。".to_string())?;
+
+    weixin_debug(format!(
+        "start account status={} base_url={} token_present={}",
+        account.status,
+        normalize_base_url(&account.base_url),
+        !account.bot_token.trim().is_empty()
+    ));
 
     if account.bot_token.trim().is_empty() {
         return Err("请先扫码连接微信 ClawBot。".to_string());
@@ -360,6 +478,7 @@ pub fn weixin_clawbot_start(app: AppHandle) -> Result<WeixinClawbotStatus, Strin
 
 #[tauri::command]
 pub fn weixin_clawbot_stop(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
+    weixin_debug("command stop");
     {
         let mut runtime = RUNTIME
             .lock()
@@ -386,6 +505,7 @@ pub fn weixin_clawbot_stop(app: AppHandle) -> Result<WeixinClawbotStatus, String
 
 #[tauri::command]
 pub fn weixin_clawbot_reset(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
+    weixin_debug("command reset");
     {
         let mut runtime = RUNTIME
             .lock()
@@ -477,6 +597,8 @@ pub fn weixin_clawbot_list_events(app: AppHandle) -> Result<Vec<WeixinClawbotEve
 }
 
 fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
+    let mut keep_final_status = false;
+
     while !stop.load(Ordering::SeqCst) {
         let account = match load_account(&app, &account_id) {
             Ok(Some(account)) => account,
@@ -567,6 +689,23 @@ fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
                 }
             }
             Err(error) => {
+                if is_weixin_session_expired_error(&error) {
+                    let message = "微信 ClawBot 登录已过期，请重新生成二维码并扫码连接。";
+                    let _ = expire_weixin_session(&app, &account_id, message);
+                    record_event(
+                        &app,
+                        &account_id,
+                        "system",
+                        "",
+                        "微信 ClawBot 登录已过期",
+                        "expired",
+                        &error,
+                    );
+                    stop.store(true, Ordering::SeqCst);
+                    keep_final_status = true;
+                    break;
+                }
+
                 let _ = update_runtime_error(&app, &account_id, &error);
                 record_event(
                     &app,
@@ -582,8 +721,10 @@ fn poll_loop(app: AppHandle, account_id: String, stop: Arc<AtomicBool>) {
         }
     }
 
-    if let Ok(conn) = open_weixin_db(&app) {
-        let _ = update_account_status(&conn, "stopped", "");
+    if !keep_final_status {
+        if let Ok(conn) = open_weixin_db(&app) {
+            let _ = update_account_status(&conn, "stopped", "");
+        }
     }
 }
 
@@ -602,11 +743,23 @@ fn enqueue_incoming_text(
         "received",
         "",
     );
+    weixin_debug(format!(
+        "inbound accepted account={} from={} context={} text_len={} text_preview={:?}",
+        account_id,
+        mask_weixin_id(&message.from_user_id),
+        token_fingerprint(&message.context_token),
+        message.text.chars().count(),
+        truncate_text(&message.text, 80)
+    ));
 
     let from_user_id = message.from_user_id.clone();
     let context_token = message.context_token.clone();
-    let key = weixin_message_key(account_id, &from_user_id);
-    let generation = {
+    let run_key = format!(
+        "{}\n{}",
+        weixin_message_key(account_id, &from_user_id),
+        build_event_id()
+    );
+    let reset_generation = {
         let Ok(mut state) = MESSAGE_STATE.lock() else {
             record_event(
                 app,
@@ -621,225 +774,31 @@ fn enqueue_incoming_text(
         };
 
         let reset_generation = state.reset_generation;
-        let entry = state
-            .pending
-            .entry(key)
-            .or_insert_with(|| PendingWeixinBatch {
-                account_id: account_id.to_string(),
-                from_user_id: from_user_id.clone(),
-                context_token: String::new(),
-                messages: Vec::new(),
-                generation: 0,
+        state.active.insert(
+            run_key.clone(),
+            ActiveWeixinRun {
+                cancel: None,
+                context_token: context_token.clone(),
                 reset_generation,
-            });
-        entry.context_token = context_token;
-        entry.messages.push(message);
-        entry.generation = entry.generation.saturating_add(1);
-        entry.generation
+            },
+        );
+        reset_generation
     };
 
-    spawn_weixin_batch_flush(
-        app.clone(),
-        account_id.to_string(),
+    let batch = PendingWeixinBatch {
+        account_id: account_id.to_string(),
         from_user_id,
-        client.clone(),
-        generation,
-        MESSAGE_BATCH_DELAY_MS,
-    );
-    true
-}
-
-fn spawn_weixin_batch_flush(
-    app: AppHandle,
-    account_id: String,
-    from_user_id: String,
-    client: IlinkClient,
-    generation: u64,
-    delay_ms: u64,
-) {
+        context_token,
+        messages: vec![message],
+        reset_generation,
+    };
+    let app = app.clone();
+    let client = client.clone();
     thread::spawn(move || {
-        thread::sleep(StdDuration::from_millis(delay_ms));
-        flush_weixin_batch(app, account_id, from_user_id, client, generation);
+        process_incoming_text_batch(&app, &client, batch, run_key);
     });
-}
 
-fn flush_weixin_batch(
-    app: AppHandle,
-    account_id: String,
-    from_user_id: String,
-    client: IlinkClient,
-    generation: u64,
-) {
-    let key = weixin_message_key(&account_id, &from_user_id);
-    let mut retry_generation = None;
-    let mut batch_to_start = None;
-    let mut batch_to_insert = None;
-    let mut active_commands = None;
-
-    {
-        let Ok(mut state) = MESSAGE_STATE.lock() else {
-            record_event(
-                &app,
-                &account_id,
-                "system",
-                &from_user_id,
-                "锁定微信消息队列失败",
-                "error",
-                "",
-            );
-            return;
-        };
-
-        let current_generation = state
-            .pending
-            .get(&key)
-            .filter(|entry| entry.reset_generation == state.reset_generation)
-            .map(|entry| entry.generation);
-        if current_generation != Some(generation) {
-            if state
-                .pending
-                .get(&key)
-                .is_some_and(|entry| entry.reset_generation != state.reset_generation)
-            {
-                state.pending.remove(&key);
-            }
-            return;
-        }
-
-        if state.active.contains_key(&key) {
-            active_commands = state.active.get(&key).and_then(|run| run.commands.clone());
-            if active_commands.is_some() {
-                batch_to_insert = state.pending.remove(&key);
-                if let Some(batch) = &batch_to_insert {
-                    if let Some(active) = state.active.get_mut(&key) {
-                        active.context_token = batch.context_token.clone();
-                    }
-                }
-            } else if let Some(entry) = state.pending.get_mut(&key) {
-                entry.generation = entry.generation.saturating_add(1);
-                retry_generation = Some(entry.generation);
-            }
-        } else {
-            batch_to_start = state.pending.remove(&key);
-            if let Some(batch) = &batch_to_start {
-                state.active.insert(
-                    key.clone(),
-                    ActiveWeixinRun {
-                        commands: None,
-                        cancel: None,
-                        context_token: batch.context_token.clone(),
-                        inflight_inserts: VecDeque::new(),
-                        reset_generation: batch.reset_generation,
-                    },
-                );
-            }
-        }
-    }
-
-    if let Some(next_generation) = retry_generation {
-        spawn_weixin_batch_flush(
-            app,
-            account_id,
-            from_user_id,
-            client,
-            next_generation,
-            MESSAGE_ACTIVE_RETRY_DELAY_MS,
-        );
-        return;
-    }
-
-    if let Some(batch) = batch_to_insert {
-        let prompts = prompts_from_batch(&batch);
-        if prompts.is_empty() {
-            return;
-        }
-
-        if let Some(sender) = active_commands {
-            match chat::enqueue_channel_agent_prompts(&sender, prompts) {
-                Ok(()) => {
-                    let account_id_for_event = batch.account_id.clone();
-                    let from_user_id_for_event = batch.from_user_id.clone();
-                    let mut pending_tracking = Some(batch);
-                    let tracked = if let Ok(mut state) = MESSAGE_STATE.lock() {
-                        if let Some(active) = state.active.get_mut(&key).filter(|active| {
-                            pending_tracking.as_ref().is_some_and(|batch| {
-                                active.reset_generation == batch.reset_generation
-                            })
-                        }) {
-                            if let Some(batch) = pending_tracking.take() {
-                                active.inflight_inserts.push_back(batch);
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    let retry_generation =
-                        pending_tracking.and_then(|batch| requeue_weixin_batch(&key, batch));
-                    if let Some(next_generation) = retry_generation {
-                        spawn_weixin_batch_flush(
-                            app.clone(),
-                            account_id.clone(),
-                            from_user_id.clone(),
-                            client.clone(),
-                            next_generation,
-                            MESSAGE_ACTIVE_RETRY_DELAY_MS,
-                        );
-                    }
-
-                    record_event(
-                        &app,
-                        &account_id_for_event,
-                        "system",
-                        &from_user_id_for_event,
-                        if tracked {
-                            "运行中消息已发送到 Agent 队列，等待框架确认"
-                        } else {
-                            "运行中消息追踪失败，已回到待处理队列"
-                        },
-                        if tracked { "queued" } else { "retry" },
-                        "",
-                    );
-                }
-                Err(error) => {
-                    record_event(
-                        &app,
-                        &batch.account_id,
-                        "system",
-                        &batch.from_user_id,
-                        "运行中消息插入失败，等待重试",
-                        "error",
-                        &error,
-                    );
-
-                    let next_generation = {
-                        let Ok(mut state) = MESSAGE_STATE.lock() else {
-                            return;
-                        };
-                        requeue_weixin_batch_locked(&mut state, &key, batch).unwrap_or(generation)
-                    };
-                    spawn_weixin_batch_flush(
-                        app,
-                        account_id,
-                        from_user_id,
-                        client,
-                        next_generation,
-                        MESSAGE_ACTIVE_RETRY_DELAY_MS,
-                    );
-                }
-            }
-        }
-        return;
-    }
-
-    if let Some(batch) = batch_to_start {
-        process_incoming_text_batch(&app, &client, batch, key);
-    }
+    true
 }
 
 fn prompts_from_batch(batch: &PendingWeixinBatch) -> Vec<String> {
@@ -851,86 +810,62 @@ fn prompts_from_batch(batch: &PendingWeixinBatch) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-fn prompt_count_from_batch(batch: &PendingWeixinBatch) -> usize {
-    batch
-        .messages
-        .iter()
-        .filter(|message| !message.text.trim().is_empty())
-        .count()
-}
-
-fn requeue_weixin_batch_locked(
-    state: &mut WeixinMessageState,
-    key: &str,
-    mut batch: PendingWeixinBatch,
-) -> Option<u64> {
-    if batch.reset_generation != state.reset_generation {
-        return None;
-    }
-
-    if state
-        .pending
-        .get(key)
-        .is_some_and(|entry| entry.reset_generation != state.reset_generation)
+fn receive_weixin_agent_result(key: &str, run: chat::ChannelAgentRun) -> Result<String, String> {
+    weixin_debug(format!(
+        "agent wait result key={}",
+        truncate_text(&key.replace('\n', "/"), 96)
+    ));
+    match run
+        .result
+        .recv_timeout(StdDuration::from_secs(CHANNEL_AGENT_RESULT_TIMEOUT_SECS))
     {
-        state.pending.remove(key);
-    }
-
-    if let Some(entry) = state.pending.get_mut(key) {
-        let mut messages = batch.messages;
-        messages.append(&mut entry.messages);
-        entry.messages = messages;
-        if entry.context_token.trim().is_empty() {
-            entry.context_token = batch.context_token;
-        }
-        entry.generation = entry.generation.saturating_add(1);
-        Some(entry.generation)
-    } else {
-        batch.generation = batch.generation.saturating_add(1);
-        let generation = batch.generation;
-        state.pending.insert(key.to_string(), batch);
-        Some(generation)
-    }
-}
-
-fn requeue_weixin_batch(key: &str, batch: PendingWeixinBatch) -> Option<u64> {
-    let Ok(mut state) = MESSAGE_STATE.lock() else {
-        return None;
-    };
-    requeue_weixin_batch_locked(&mut state, key, batch)
-}
-
-fn settle_weixin_active_inserts(key: &str, acknowledged_prompts: usize) -> usize {
-    let Ok(mut state) = MESSAGE_STATE.lock() else {
-        return 0;
-    };
-
-    let mut unconfirmed = Vec::new();
-    let mut requeued_prompt_count = 0usize;
-
-    {
-        let Some(active) = state.active.get_mut(key) else {
-            return 0;
-        };
-        let mut remaining = acknowledged_prompts;
-
-        while let Some(batch) = active.inflight_inserts.pop_front() {
-            let prompt_count = prompt_count_from_batch(&batch);
-            if prompt_count > 0 && remaining >= prompt_count {
-                remaining -= prompt_count;
-                active.context_token = batch.context_token.clone();
-            } else {
-                requeued_prompt_count = requeued_prompt_count.saturating_add(prompt_count);
-                unconfirmed.push(batch);
+        Ok(result) => {
+            match &result {
+                Ok(reply) => weixin_debug(format!(
+                    "agent result ok key={} reply_len={} reply_preview={:?}",
+                    truncate_text(&key.replace('\n', "/"), 96),
+                    reply.chars().count(),
+                    truncate_text(reply, 120)
+                )),
+                Err(error) => weixin_debug(format!(
+                    "agent result error key={} error={}",
+                    truncate_text(&key.replace('\n', "/"), 96),
+                    truncate_text(error, 300)
+                )),
             }
+            result
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            weixin_debug(format!(
+                "agent result timeout key={} timeout_secs={}",
+                truncate_text(&key.replace('\n', "/"), 96),
+                CHANNEL_AGENT_RESULT_TIMEOUT_SECS
+            ));
+            cancel_weixin_active_run(key);
+            Err(format!(
+                "Agent 回复超时，已等待 {} 秒并取消本次微信运行。",
+                CHANNEL_AGENT_RESULT_TIMEOUT_SECS
+            ))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            weixin_debug(format!(
+                "agent result channel disconnected key={}",
+                truncate_text(&key.replace('\n', "/"), 96)
+            ));
+            Err("Agent 结果通道已关闭。".to_string())
         }
     }
+}
 
-    for batch in unconfirmed {
-        let _ = requeue_weixin_batch_locked(&mut state, key, batch);
+fn cancel_weixin_active_run(key: &str) {
+    let Ok(mut state) = MESSAGE_STATE.lock() else {
+        return;
+    };
+    if let Some(active) = state.active.get_mut(key) {
+        if let Some(cancel) = active.cancel.take() {
+            let _ = cancel.send(());
+        }
     }
-
-    requeued_prompt_count
 }
 
 fn start_weixin_channel_run(
@@ -954,7 +889,6 @@ fn start_weixin_channel_run(
             .get_mut(key)
             .filter(|active| active.reset_generation == reset_generation)
         {
-            active.commands = Some(run.commands.clone());
             active.cancel = run.cancel.take();
             attached_to_active_run = true;
         }
@@ -976,12 +910,29 @@ fn process_incoming_text_batch(
     batch: PendingWeixinBatch,
     key: String,
 ) {
+    weixin_debug(format!(
+        "run start account={} from={} context={} reset_generation={} key={}",
+        batch.account_id,
+        mask_weixin_id(&batch.from_user_id),
+        token_fingerprint(&batch.context_token),
+        batch.reset_generation,
+        truncate_text(&key.replace('\n', "/"), 96)
+    ));
+
     if !is_weixin_batch_current(batch.reset_generation) {
+        weixin_debug(format!(
+            "run skipped stale generation key={}",
+            truncate_text(&key.replace('\n', "/"), 96)
+        ));
         return;
     }
 
     let prompts = prompts_from_batch(&batch);
     if prompts.is_empty() {
+        weixin_debug(format!(
+            "run ignored empty prompt key={}",
+            truncate_text(&key.replace('\n', "/"), 96)
+        ));
         finish_weixin_active_run(
             app,
             client,
@@ -993,7 +944,7 @@ fn process_incoming_text_batch(
         return;
     }
 
-    let agent_session_id = match get_or_create_agent_session(
+    let (agent_session_id, agent_session_created) = match get_or_create_agent_session(
         app,
         &batch.account_id,
         &batch.from_user_id,
@@ -1001,6 +952,12 @@ fn process_incoming_text_batch(
     ) {
         Ok(session_id) => session_id,
         Err(error) => {
+            weixin_debug(format!(
+                "agent session select failed from={} context={} error={}",
+                mask_weixin_id(&batch.from_user_id),
+                token_fingerprint(&batch.context_token),
+                truncate_text(&error, 300)
+            ));
             record_event(
                 app,
                 &batch.account_id,
@@ -1021,14 +978,56 @@ fn process_incoming_text_batch(
             return;
         }
     };
+    weixin_debug(format!(
+        "agent session selected session={} created={} prompt_count={} first_prompt_len={}",
+        agent_session_id,
+        agent_session_created,
+        prompts.len(),
+        prompts
+            .first()
+            .map(|prompt| prompt.chars().count())
+            .unwrap_or(0)
+    ));
     let prompts_for_retry = prompts.clone();
+    let mut artifact_session_id = agent_session_id.clone();
+    let mut artifact_started_at = Utc::now().to_rfc3339();
+    let mut artifact_baseline = snapshot_session_file_artifact_ids(app, &artifact_session_id);
 
-    let typing_ticket = client
-        .get_typing_ticket(&batch.from_user_id, &batch.context_token)
-        .unwrap_or_default();
+    let typing_ticket = match client.get_typing_ticket(&batch.from_user_id, &batch.context_token) {
+        Ok(ticket) => {
+            weixin_debug(format!(
+                "typing ticket ok from={} context={} ticket={}",
+                mask_weixin_id(&batch.from_user_id),
+                token_fingerprint(&batch.context_token),
+                token_fingerprint(&ticket)
+            ));
+            ticket
+        }
+        Err(error) => {
+            weixin_debug(format!(
+                "typing ticket failed from={} context={} error={}",
+                mask_weixin_id(&batch.from_user_id),
+                token_fingerprint(&batch.context_token),
+                truncate_text(&error, 300)
+            ));
+            String::new()
+        }
+    };
 
     if !typing_ticket.is_empty() {
-        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 1);
+        match client.send_typing(&batch.from_user_id, &typing_ticket, 1) {
+            Ok(()) => weixin_debug(format!(
+                "typing on ok from={} ticket={}",
+                mask_weixin_id(&batch.from_user_id),
+                token_fingerprint(&typing_ticket)
+            )),
+            Err(error) => weixin_debug(format!(
+                "typing on failed from={} ticket={} error={}",
+                mask_weixin_id(&batch.from_user_id),
+                token_fingerprint(&typing_ticket),
+                truncate_text(&error, 300)
+            )),
+        }
     }
 
     if !is_weixin_batch_current(batch.reset_generation) {
@@ -1077,17 +1076,71 @@ fn process_incoming_text_batch(
                 &batch.account_id,
                 &batch.from_user_id,
                 &batch.context_token,
-            )
-            .and_then(|next_session_id| {
-                start_weixin_channel_run(
-                    app,
-                    &key,
-                    next_session_id,
-                    prompts_for_retry.clone(),
-                    batch.reset_generation,
-                )
-            }) {
-                Ok(run) => run,
+            ) {
+                Ok(next_session_id) => {
+                    artifact_session_id = next_session_id.clone();
+                    artifact_started_at = Utc::now().to_rfc3339();
+                    artifact_baseline =
+                        snapshot_session_file_artifact_ids(app, &artifact_session_id);
+                    match start_weixin_channel_run(
+                        app,
+                        &key,
+                        next_session_id,
+                        prompts_for_retry.clone(),
+                        batch.reset_generation,
+                    ) {
+                        Ok(run) => run,
+                        Err(retry_error) if chat::is_channel_agent_cancelled(&retry_error) => {
+                            let _ = finish_weixin_active_run(
+                                app,
+                                client,
+                                &key,
+                                &batch.account_id,
+                                &batch.from_user_id,
+                                &batch.context_token,
+                            );
+                            return;
+                        }
+                        Err(retry_error) => {
+                            record_event(
+                                app,
+                                &batch.account_id,
+                                "system",
+                                &batch.from_user_id,
+                                "Agent 调用失败",
+                                "error",
+                                &retry_error,
+                            );
+                            let reply_context_token = finish_weixin_active_run(
+                                app,
+                                client,
+                                &key,
+                                &batch.account_id,
+                                &batch.from_user_id,
+                                &batch.context_token,
+                            );
+                            let fallback = "当前无法生成回复，请稍后再试。".to_string();
+                            send_weixin_agent_reply(
+                                app,
+                                client,
+                                &batch,
+                                &reply_context_token,
+                                &fallback,
+                                &[],
+                            );
+                            if !typing_ticket.is_empty() {
+                                send_weixin_typing_with_log(
+                                    client,
+                                    &batch.from_user_id,
+                                    &typing_ticket,
+                                    2,
+                                    "off",
+                                );
+                            }
+                            return;
+                        }
+                    }
+                }
                 Err(retry_error) if chat::is_channel_agent_cancelled(&retry_error) => {
                     let _ = finish_weixin_active_run(
                         app,
@@ -1118,9 +1171,22 @@ fn process_incoming_text_batch(
                         &batch.context_token,
                     );
                     let fallback = "当前无法生成回复，请稍后再试。".to_string();
-                    send_weixin_agent_reply(app, client, &batch, &reply_context_token, &fallback);
+                    send_weixin_agent_reply(
+                        app,
+                        client,
+                        &batch,
+                        &reply_context_token,
+                        &fallback,
+                        &[],
+                    );
                     if !typing_ticket.is_empty() {
-                        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+                        send_weixin_typing_with_log(
+                            client,
+                            &batch.from_user_id,
+                            &typing_ticket,
+                            2,
+                            "off",
+                        );
                     }
                     return;
                 }
@@ -1145,18 +1211,15 @@ fn process_incoming_text_batch(
                 &batch.context_token,
             );
             let fallback = "当前无法生成回复，请稍后再试。".to_string();
-            send_weixin_agent_reply(app, client, &batch, &reply_context_token, &fallback);
+            send_weixin_agent_reply(app, client, &batch, &reply_context_token, &fallback, &[]);
             if !typing_ticket.is_empty() {
-                let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+                send_weixin_typing_with_log(client, &batch.from_user_id, &typing_ticket, 2, "off");
             }
             return;
         }
     };
 
-    let mut reply_result = run
-        .result
-        .recv()
-        .unwrap_or_else(|_| Err("Agent 结果通道已关闭。".to_string()));
+    let mut reply_result = receive_weixin_agent_result(&key, run);
 
     if reply_result
         .as_ref()
@@ -1190,21 +1253,25 @@ fn process_incoming_text_batch(
                 &batch.account_id,
                 &batch.from_user_id,
                 &batch.context_token,
-            )
-            .and_then(|next_session_id| {
-                let retry_run = start_weixin_channel_run(
-                    app,
-                    &key,
-                    next_session_id,
-                    prompts_for_retry,
-                    batch.reset_generation,
-                )?;
-                retry_run
-                    .result
-                    .recv()
-                    .unwrap_or_else(|_| Err("Agent 结果通道已关闭。".to_string()))
-            }) {
-                Ok(reply) => Ok(reply),
+            ) {
+                Ok(next_session_id) => {
+                    artifact_session_id = next_session_id.clone();
+                    artifact_started_at = Utc::now().to_rfc3339();
+                    artifact_baseline =
+                        snapshot_session_file_artifact_ids(app, &artifact_session_id);
+                    match start_weixin_channel_run(
+                        app,
+                        &key,
+                        next_session_id,
+                        prompts_for_retry,
+                        batch.reset_generation,
+                    )
+                    .and_then(|retry_run| receive_weixin_agent_result(&key, retry_run))
+                    {
+                        Ok(reply) => Ok(reply),
+                        Err(retry_error) => Err(retry_error),
+                    }
+                }
                 Err(retry_error) => Err(retry_error),
             };
         }
@@ -1226,24 +1293,6 @@ fn process_incoming_text_batch(
         return;
     }
 
-    let acknowledged_inserted_prompts = reply_result
-        .as_ref()
-        .ok()
-        .map(|reply| reply.queued_prompts)
-        .unwrap_or_default();
-    let requeued_prompts = settle_weixin_active_inserts(&key, acknowledged_inserted_prompts);
-    if requeued_prompts > 0 {
-        record_event(
-            app,
-            &batch.account_id,
-            "system",
-            &batch.from_user_id,
-            "运行中消息未被框架确认，已回到待处理队列",
-            "retry",
-            &format!("{requeued_prompts} 条消息等待下一轮处理"),
-        );
-    }
-
     let reply_context_token = finish_weixin_active_run(
         app,
         client,
@@ -1253,8 +1302,17 @@ fn process_incoming_text_batch(
         &batch.context_token,
     );
 
+    let mut reply_artifacts = Vec::new();
     let reply = match reply_result {
-        Ok(reply) => reply.reply,
+        Ok(reply) => {
+            reply_artifacts = collect_new_session_file_artifacts(
+                app,
+                &artifact_session_id,
+                &artifact_baseline,
+                &artifact_started_at,
+            );
+            reply
+        }
         Err(error) => {
             record_event(
                 app,
@@ -1269,10 +1327,17 @@ fn process_incoming_text_batch(
         }
     };
 
-    send_weixin_agent_reply(app, client, &batch, &reply_context_token, &reply);
+    send_weixin_agent_reply(
+        app,
+        client,
+        &batch,
+        &reply_context_token,
+        &reply,
+        &reply_artifacts,
+    );
 
     if !typing_ticket.is_empty() {
-        let _ = client.send_typing(&batch.from_user_id, &typing_ticket, 2);
+        send_weixin_typing_with_log(client, &batch.from_user_id, &typing_ticket, 2, "off");
     }
 }
 
@@ -1297,52 +1362,49 @@ fn is_weixin_active_run_current(key: &str, reset_generation: u64) -> bool {
 }
 
 fn finish_weixin_active_run(
-    app: &AppHandle,
-    client: &IlinkClient,
+    _app: &AppHandle,
+    _client: &IlinkClient,
     key: &str,
-    account_id: &str,
-    from_user_id: &str,
+    _account_id: &str,
+    _from_user_id: &str,
     fallback_context_token: &str,
 ) -> String {
-    let requeued_prompts = settle_weixin_active_inserts(key, 0);
-    if requeued_prompts > 0 {
-        record_event(
-            app,
-            account_id,
-            "system",
-            from_user_id,
-            "运行中消息未确认，已回到待处理队列",
-            "retry",
-            &format!("{requeued_prompts} 条消息等待下一轮处理"),
-        );
-    }
-
-    let (reply_context_token, pending_generation) = {
-        let Ok(mut state) = MESSAGE_STATE.lock() else {
-            return fallback_context_token.to_string();
-        };
-        let reply_context_token = state
-            .active
-            .remove(key)
-            .map(|run| run.context_token)
-            .filter(|token| !token.trim().is_empty())
-            .unwrap_or_else(|| fallback_context_token.to_string());
-        let pending_generation = state.pending.get(key).map(|entry| entry.generation);
-        (reply_context_token, pending_generation)
+    let Ok(mut state) = MESSAGE_STATE.lock() else {
+        return fallback_context_token.to_string();
     };
 
-    if let Some(next_generation) = pending_generation {
-        spawn_weixin_batch_flush(
-            app.clone(),
-            account_id.to_string(),
-            from_user_id.to_string(),
-            client.clone(),
-            next_generation,
-            MESSAGE_BATCH_DELAY_MS,
-        );
-    }
+    state
+        .active
+        .remove(key)
+        .map(|run| run.context_token)
+        .filter(|token| !token.trim().is_empty())
+        .unwrap_or_else(|| fallback_context_token.to_string())
+}
 
-    reply_context_token
+fn send_weixin_typing_with_log(
+    client: &IlinkClient,
+    from_user_id: &str,
+    typing_ticket: &str,
+    status: i64,
+    label: &str,
+) {
+    match client.send_typing(from_user_id, typing_ticket, status) {
+        Ok(()) => weixin_debug(format!(
+            "typing {} ok from={} status={} ticket={}",
+            label,
+            mask_weixin_id(from_user_id),
+            status,
+            token_fingerprint(typing_ticket)
+        )),
+        Err(error) => weixin_debug(format!(
+            "typing {} failed from={} status={} ticket={} error={}",
+            label,
+            mask_weixin_id(from_user_id),
+            status,
+            token_fingerprint(typing_ticket),
+            truncate_text(&error, 300)
+        )),
+    }
 }
 
 fn send_weixin_agent_reply(
@@ -1351,11 +1413,33 @@ fn send_weixin_agent_reply(
     batch: &PendingWeixinBatch,
     context_token: &str,
     reply: &str,
+    file_artifacts: &[artifacts::FileArtifact],
 ) {
+    weixin_debug(format!(
+        "send reply begin account={} to={} context={} reply_len={} artifact_count={} reply_preview={:?}",
+        batch.account_id,
+        mask_weixin_id(&batch.from_user_id),
+        token_fingerprint(context_token),
+        reply.chars().count(),
+        file_artifacts.len(),
+        truncate_text(reply, 120)
+    ));
     let mut last_error = String::new();
     for attempt in 1..=MESSAGE_SEND_RETRY_ATTEMPTS {
+        weixin_debug(format!(
+            "send reply attempt={} to={} context={}",
+            attempt,
+            mask_weixin_id(&batch.from_user_id),
+            token_fingerprint(context_token)
+        ));
         match client.send_message(&batch.from_user_id, context_token, reply) {
             Ok(()) => {
+                weixin_debug(format!(
+                    "send reply ok attempt={} to={} context={}",
+                    attempt,
+                    mask_weixin_id(&batch.from_user_id),
+                    token_fingerprint(context_token)
+                ));
                 record_event(
                     app,
                     &batch.account_id,
@@ -1365,9 +1449,17 @@ fn send_weixin_agent_reply(
                     "sent",
                     "",
                 );
+                send_weixin_file_artifacts(app, client, batch, context_token, file_artifacts);
                 return;
             }
             Err(error) => {
+                weixin_debug(format!(
+                    "send reply failed attempt={} to={} context={} error={}",
+                    attempt,
+                    mask_weixin_id(&batch.from_user_id),
+                    token_fingerprint(context_token),
+                    truncate_text(&error, 500)
+                ));
                 last_error = error;
                 if attempt < MESSAGE_SEND_RETRY_ATTEMPTS {
                     thread::sleep(StdDuration::from_millis(MESSAGE_SEND_RETRY_DELAY_MS));
@@ -1388,6 +1480,134 @@ fn send_weixin_agent_reply(
             MESSAGE_SEND_RETRY_ATTEMPTS, last_error
         ),
     );
+}
+
+fn snapshot_session_file_artifact_ids(app: &AppHandle, session_id: &str) -> HashSet<String> {
+    artifacts::list_file_artifacts(app.clone(), session_id.to_string())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|artifact| artifact.id)
+        .collect()
+}
+
+fn collect_new_session_file_artifacts(
+    app: &AppHandle,
+    session_id: &str,
+    baseline_ids: &HashSet<String>,
+    started_at: &str,
+) -> Vec<artifacts::FileArtifact> {
+    let mut items = artifacts::list_file_artifacts(app.clone(), session_id.to_string())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|artifact| {
+            matches!(artifact.action.as_str(), "added" | "edited" | "attached")
+                && !artifact.file_path.trim().is_empty()
+                && (!baseline_ids.contains(&artifact.id)
+                    || artifact.created_at.as_str() > started_at)
+        })
+        .collect::<Vec<_>>();
+
+    items.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    items
+}
+
+fn send_weixin_file_artifacts(
+    app: &AppHandle,
+    client: &IlinkClient,
+    batch: &PendingWeixinBatch,
+    context_token: &str,
+    artifacts: &[artifacts::FileArtifact],
+) {
+    if artifacts.is_empty() {
+        return;
+    }
+
+    let mut sent_paths = HashSet::new();
+    for artifact in artifacts {
+        if !sent_paths.insert(artifact.file_path.clone()) {
+            continue;
+        }
+
+        let file_name = artifact_file_name(artifact);
+        weixin_debug(format!(
+            "send file artifact begin account={} to={} context={} artifact_id={} action={} name={}",
+            batch.account_id,
+            mask_weixin_id(&batch.from_user_id),
+            token_fingerprint(context_token),
+            artifact.id,
+            artifact.action,
+            file_name
+        ));
+
+        let mut last_error = String::new();
+        for attempt in 1..=MESSAGE_SEND_RETRY_ATTEMPTS {
+            match client.send_file_attachment(
+                &batch.from_user_id,
+                context_token,
+                &artifact.file_path,
+                &file_name,
+            ) {
+                Ok(()) => {
+                    weixin_debug(format!(
+                        "send file artifact ok attempt={} to={} context={} name={}",
+                        attempt,
+                        mask_weixin_id(&batch.from_user_id),
+                        token_fingerprint(context_token),
+                        file_name
+                    ));
+                    record_event(
+                        app,
+                        &batch.account_id,
+                        "outbound",
+                        &batch.from_user_id,
+                        &format!("文件：{file_name}"),
+                        "sent",
+                        "",
+                    );
+                    last_error.clear();
+                    break;
+                }
+                Err(error) => {
+                    last_error = error;
+                    weixin_debug(format!(
+                        "send file artifact failed attempt={} to={} context={} name={} error={}",
+                        attempt,
+                        mask_weixin_id(&batch.from_user_id),
+                        token_fingerprint(context_token),
+                        file_name,
+                        truncate_text(&last_error, 500)
+                    ));
+                    if attempt < MESSAGE_SEND_RETRY_ATTEMPTS {
+                        thread::sleep(StdDuration::from_millis(MESSAGE_SEND_RETRY_DELAY_MS));
+                    }
+                }
+            }
+        }
+
+        if !last_error.is_empty() {
+            record_event(
+                app,
+                &batch.account_id,
+                "outbound",
+                &batch.from_user_id,
+                &format!("文件：{file_name}"),
+                "error",
+                &last_error,
+            );
+        }
+    }
+}
+
+fn artifact_file_name(artifact: &artifacts::FileArtifact) -> String {
+    if !artifact.name.trim().is_empty() {
+        return artifact.name.clone();
+    }
+
+    Path::new(&artifact.file_path)
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "otherone-file".to_string())
 }
 
 fn build_status(app: &AppHandle) -> Result<WeixinClawbotStatus, String> {
@@ -1571,25 +1791,77 @@ fn update_runtime_error(app: &AppHandle, account_id: &str, error: &str) -> Resul
     Ok(())
 }
 
+fn expire_weixin_session(app: &AppHandle, account_id: &str, message: &str) -> Result<(), String> {
+    let active_cancels = {
+        let mut state = MESSAGE_STATE
+            .lock()
+            .map_err(|_| "无法锁定微信消息队列。".to_string())?;
+        let key_prefix = format!("{account_id}\n");
+        state.pending.retain(|key, _| !key.starts_with(&key_prefix));
+        state.reset_generation = state.reset_generation.saturating_add(1);
+
+        let active = std::mem::take(&mut state.active);
+        let mut kept_active = HashMap::new();
+        let mut cancels = Vec::new();
+        for (key, mut run) in active {
+            if key.starts_with(&key_prefix) {
+                if let Some(cancel) = run.cancel.take() {
+                    cancels.push(cancel);
+                }
+            } else {
+                kept_active.insert(key, run);
+            }
+        }
+        state.active = kept_active;
+        cancels
+    };
+
+    for cancel in active_cancels {
+        let _ = cancel.send(());
+    }
+
+    let conn = open_weixin_db(app)?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE weixin_clawbot_accounts
+         SET bot_token = '',
+             get_updates_buf = '',
+             status = 'disconnected',
+             login_expires_at = NULL,
+             last_error = ?1,
+             updated_at = ?2
+         WHERE id = ?3",
+        params![message, now, account_id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM weixin_clawbot_sessions WHERE account_id = ?1",
+        params![account_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn get_or_create_agent_session(
     app: &AppHandle,
     account_id: &str,
     from_user_id: &str,
     context_token: &str,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     let conn = open_weixin_db(app)?;
-    if let Some(session_id) = conn
+    let existing_session = conn
         .query_row(
             "SELECT agent_session_id
              FROM weixin_clawbot_sessions
-             WHERE account_id = ?1 AND from_user_id = ?2",
+             WHERE account_id = ?1 AND from_user_id = ?2 AND agent_session_id <> ''",
             params![account_id, from_user_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(|error| error.to_string())?
-    {
-        let now = Utc::now().to_rfc3339();
+        .map_err(|error| error.to_string())?;
+
+    let now = Utc::now().to_rfc3339();
+    if let Some(session_id) = existing_session {
         conn.execute(
             "UPDATE weixin_clawbot_sessions
              SET last_context_token = ?1, last_message_at = ?2
@@ -1597,19 +1869,22 @@ fn get_or_create_agent_session(
             params![context_token, now, account_id, from_user_id],
         )
         .map_err(|error| error.to_string())?;
-        return Ok(session_id);
+        return Ok((session_id, false));
     }
 
     let session_id = build_agent_session_id(account_id, from_user_id);
-    let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO weixin_clawbot_sessions
          (account_id, from_user_id, agent_session_id, last_context_token, last_message_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(account_id, from_user_id) DO UPDATE SET
+            agent_session_id=excluded.agent_session_id,
+            last_context_token=excluded.last_context_token,
+            last_message_at=excluded.last_message_at",
         params![account_id, from_user_id, session_id, context_token, now],
     )
     .map_err(|error| error.to_string())?;
-    Ok(session_id)
+    Ok((session_id, true))
 }
 
 fn rotate_agent_session(
@@ -1825,7 +2100,7 @@ impl IlinkClient {
             "msg": {
                 "from_user_id": "",
                 "to_user_id": to_user_id,
-                "client_id": format!("openclaw-weixin-{}", random_hex(8)),
+                "client_id": build_weixin_client_id(),
                 "message_type": 2,
                 "message_state": 2,
                 "context_token": context_token,
@@ -1837,6 +2112,198 @@ impl IlinkClient {
                         },
                     },
                 ],
+            },
+            "base_info": base_info(),
+        });
+        let value = self.post_json("ilink/bot/sendmessage", &body)?;
+        ensure_api_success(&value)
+    }
+
+    fn send_file_attachment(
+        &self,
+        to_user_id: &str,
+        context_token: &str,
+        file_path: &str,
+        file_name: &str,
+    ) -> Result<(), String> {
+        let path = Path::new(file_path);
+        let metadata = fs::metadata(path).map_err(|error| format!("读取文件信息失败：{error}"))?;
+        if !metadata.is_file() {
+            return Err("只能发送普通文件。".to_string());
+        }
+
+        let file_size = metadata.len();
+        if file_size == 0 {
+            return Err("文件为空，无法发送到微信。".to_string());
+        }
+        if file_size > MAX_WEIXIN_FILE_ATTACHMENT_BYTES {
+            return Err(format!(
+                "文件过大，当前限制 {} MB。",
+                MAX_WEIXIN_FILE_ATTACHMENT_BYTES / 1024 / 1024
+            ));
+        }
+
+        let plaintext = fs::read(path).map_err(|error| format!("读取文件失败：{error}"))?;
+        let rawfilemd5 = format!("{:x}", md5::compute(&plaintext));
+        let filekey = secure_random_hex(16)?;
+        let aes_key = secure_random_bytes_16()?;
+        let aeskey_hex = hex_encode(&aes_key);
+        let ciphertext_size = aes_ecb_padded_size(plaintext.len());
+
+        weixin_debug(format!(
+            "file upload prepare to={} name={} rawsize={} ciphertext_size={}",
+            mask_weixin_id(to_user_id),
+            file_name,
+            file_size,
+            ciphertext_size
+        ));
+
+        let uploaded = self.upload_file_attachment_to_weixin(
+            to_user_id,
+            &plaintext,
+            file_size,
+            ciphertext_size,
+            &rawfilemd5,
+            &filekey,
+            &aes_key,
+            &aeskey_hex,
+        )?;
+
+        let item = json!({
+            "type": WEIXIN_FILE_ITEM_TYPE,
+            "file_item": {
+                "media": {
+                    "encrypt_query_param": uploaded.download_encrypted_query_param,
+                    "aes_key": base64_encode(uploaded.aeskey_hex.as_bytes()),
+                    "encrypt_type": 1,
+                },
+                "file_name": file_name,
+                "len": uploaded.file_size.to_string(),
+            },
+        });
+        self.send_message_item(to_user_id, context_token, item)
+    }
+
+    fn upload_file_attachment_to_weixin(
+        &self,
+        to_user_id: &str,
+        plaintext: &[u8],
+        file_size: u64,
+        ciphertext_size: usize,
+        rawfilemd5: &str,
+        filekey: &str,
+        aes_key: &[u8; 16],
+        aeskey_hex: &str,
+    ) -> Result<UploadedWeixinFile, String> {
+        let body = json!({
+            "filekey": filekey,
+            "media_type": WEIXIN_FILE_MEDIA_TYPE,
+            "to_user_id": to_user_id,
+            "rawsize": file_size,
+            "rawfilemd5": rawfilemd5,
+            "filesize": ciphertext_size,
+            "no_need_thumb": true,
+            "aeskey": aeskey_hex,
+            "base_info": base_info(),
+        });
+        let value = self.post_json("ilink/bot/getuploadurl", &body)?;
+        ensure_api_success(&value)?;
+
+        let upload_full_url = find_string_any(&value, &["upload_full_url", "uploadFullUrl"]);
+        let upload_param = find_string_any(&value, &["upload_param", "uploadParam"]);
+        let download_encrypted_query_param = self.upload_buffer_to_cdn(
+            plaintext,
+            upload_full_url.as_deref(),
+            upload_param.as_deref(),
+            filekey,
+            aes_key,
+        )?;
+
+        Ok(UploadedWeixinFile {
+            download_encrypted_query_param,
+            aeskey_hex: aeskey_hex.to_string(),
+            file_size,
+        })
+    }
+
+    fn upload_buffer_to_cdn(
+        &self,
+        plaintext: &[u8],
+        upload_full_url: Option<&str>,
+        upload_param: Option<&str>,
+        filekey: &str,
+        aes_key: &[u8; 16],
+    ) -> Result<String, String> {
+        let ciphertext = encrypt_aes_128_ecb(plaintext, aes_key)?;
+        let cdn_url = build_cdn_upload_url(upload_full_url, upload_param, filekey)?;
+        let mut last_error = String::new();
+
+        for attempt in 1..=CDN_UPLOAD_RETRY_ATTEMPTS {
+            let response = self
+                .client
+                .post(&cdn_url)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(ciphertext.clone())
+                .send();
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.as_u16() == 200 {
+                        let download_param = response
+                            .headers()
+                            .get("x-encrypted-param")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToOwned::to_owned)
+                            .ok_or_else(|| "CDN 上传响应缺少 x-encrypted-param。".to_string())?;
+                        return Ok(download_param);
+                    }
+
+                    let error_text = response
+                        .headers()
+                        .get("x-error-message")
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+                    last_error = format!("CDN 上传失败：{error_text}");
+                    if status.as_u16() >= 400 && status.as_u16() < 500 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    last_error = error.to_string();
+                }
+            }
+
+            if attempt < CDN_UPLOAD_RETRY_ATTEMPTS {
+                thread::sleep(StdDuration::from_millis(MESSAGE_SEND_RETRY_DELAY_MS));
+            }
+        }
+
+        Err(if last_error.is_empty() {
+            "CDN 上传失败。".to_string()
+        } else {
+            last_error
+        })
+    }
+
+    fn send_message_item(
+        &self,
+        to_user_id: &str,
+        context_token: &str,
+        item: Value,
+    ) -> Result<(), String> {
+        let body = json!({
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": build_weixin_client_id(),
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [item],
             },
             "base_info": base_info(),
         });
@@ -1899,21 +2366,32 @@ impl IlinkClient {
     }
 
     fn post_json(&self, path: &str, body: &Value) -> Result<Value, String> {
+        if should_log_ilink_path(path) {
+            weixin_debug(format!(
+                "HTTP POST {} base_url={} token_present={} body={}",
+                path,
+                self.base_url,
+                self.bot_token.is_some(),
+                summarize_debug_json(body)
+            ));
+        }
+
         let request = self.client.post(self.url_for_path(path)).json(body);
         let response = self
             .with_headers(request)
             .send()
             .map_err(|error| error.to_string())?;
-        parse_response(response)
+        parse_response(path, response)
     }
 
     fn get_json(&self, url: reqwest::Url) -> Result<Value, String> {
+        let path = url.path().to_string();
         let request = self.client.get(url);
         let response = self
             .with_headers(request)
             .send()
             .map_err(|error| error.to_string())?;
-        parse_response(response)
+        parse_response(&path, response)
     }
 
     fn url_for_path(&self, path: &str) -> String {
@@ -1941,9 +2419,18 @@ impl IlinkClient {
     }
 }
 
-fn parse_response(response: reqwest::blocking::Response) -> Result<Value, String> {
+fn parse_response(path: &str, response: reqwest::blocking::Response) -> Result<Value, String> {
     let status = response.status();
     let text = response.text().map_err(|error| error.to_string())?;
+
+    if should_log_ilink_path(path) {
+        weixin_debug(format!(
+            "HTTP {} response status={} body={}",
+            path,
+            status.as_u16(),
+            summarize_debug_response(path, &text)
+        ));
+    }
 
     if !status.is_success() {
         return Err(format!(
@@ -1983,6 +2470,86 @@ fn ensure_api_success(value: &Value) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn should_log_ilink_path(path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    normalized.contains("getconfig")
+        || normalized.contains("sendtyping")
+        || normalized.contains("sendmessage")
+        || normalized.contains("getuploadurl")
+}
+
+fn summarize_debug_json(value: &Value) -> String {
+    let mut sanitized = value.clone();
+    sanitize_debug_value(&mut sanitized);
+    let text =
+        serde_json::to_string(&sanitized).unwrap_or_else(|_| "<json serialize failed>".into());
+    truncate_text(&text, 1600)
+}
+
+fn summarize_debug_response(path: &str, text: &str) -> String {
+    if text.trim().is_empty() {
+        return "<empty>".to_string();
+    }
+
+    if should_log_ilink_path(path) {
+        if let Ok(mut value) = serde_json::from_str::<Value>(text) {
+            sanitize_debug_value(&mut value);
+            return summarize_debug_json(&value);
+        }
+    }
+
+    truncate_text(text, 1600)
+}
+
+fn sanitize_debug_value(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object.iter_mut() {
+                let normalized = key.to_ascii_lowercase();
+                if let Some(raw) = child.as_str() {
+                    if normalized == "text" {
+                        *child = Value::String(format!(
+                            "len={} preview={:?}",
+                            raw.chars().count(),
+                            truncate_text(raw, 120)
+                        ));
+                        continue;
+                    }
+
+                    if normalized.contains("token")
+                        || normalized.contains("ticket")
+                        || normalized.contains("authorization")
+                        || normalized.contains("aeskey")
+                        || normalized.contains("filekey")
+                        || normalized.contains("upload")
+                        || normalized.contains("encrypt")
+                        || normalized == "full_url"
+                    {
+                        *child = Value::String(token_fingerprint(raw));
+                        continue;
+                    }
+
+                    if normalized == "from_user_id"
+                        || normalized == "to_user_id"
+                        || normalized == "ilink_user_id"
+                    {
+                        *child = Value::String(mask_weixin_id(raw));
+                        continue;
+                    }
+                }
+
+                sanitize_debug_value(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_debug_value(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn base_info() -> Value {
@@ -2201,6 +2768,14 @@ fn should_rotate_agent_session(error: &str) -> bool {
             || normalized.contains("tool_call_id"))
 }
 
+fn is_weixin_session_expired_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    normalized.contains("session timeout")
+        || normalized.contains("返回错误 -14")
+        || normalized.contains("invalid token")
+        || normalized.contains("token expired")
+}
+
 fn build_agent_session_id(account_id: &str, from_user_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
     account_id.hash(&mut hasher);
@@ -2239,7 +2814,88 @@ fn next_uin() -> u32 {
 }
 
 fn random_hex(len: usize) -> String {
-    format!("{:016x}", next_uin()).chars().take(len).collect()
+    let mut output = String::new();
+    while output.len() < len {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or_default();
+        let counter = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mixed = now ^ counter.rotate_left(17) ^ next_uin() as u64;
+        output.push_str(&format!("{mixed:016x}"));
+    }
+    output.truncate(len);
+    output
+}
+
+fn build_weixin_client_id() -> String {
+    let suffix = secure_random_hex(8).unwrap_or_else(|_| random_hex(16));
+    format!("openclaw-weixin-{suffix}")
+}
+
+fn secure_random_bytes_16() -> Result<[u8; 16], String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|error| format!("生成随机数失败：{error}"))?;
+    Ok(bytes)
+}
+
+fn secure_random_hex(bytes_len: usize) -> Result<String, String> {
+    let mut bytes = vec![0u8; bytes_len];
+    getrandom::getrandom(&mut bytes).map_err(|error| format!("生成随机数失败：{error}"))?;
+    Ok(hex_encode(&bytes))
+}
+
+fn hex_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(input.len() * 2);
+    for byte in input {
+        output.push(TABLE[(byte >> 4) as usize] as char);
+        output.push(TABLE[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn aes_ecb_padded_size(plaintext_size: usize) -> usize {
+    ((plaintext_size + 1 + 15) / 16) * 16
+}
+
+fn encrypt_aes_128_ecb(plaintext: &[u8], aes_key: &[u8; 16]) -> Result<Vec<u8>, String> {
+    let mut buffer = plaintext.to_vec();
+    let plaintext_len = buffer.len();
+    buffer.resize(plaintext_len + 16, 0);
+
+    ecb::Encryptor::<Aes128>::new_from_slice(aes_key)
+        .map_err(|error| format!("初始化 AES 加密失败：{error}"))?
+        .encrypt_padded_mut::<Pkcs7>(&mut buffer, plaintext_len)
+        .map(|ciphertext| ciphertext.to_vec())
+        .map_err(|error| format!("AES 加密失败：{error}"))
+}
+
+fn build_cdn_upload_url(
+    upload_full_url: Option<&str>,
+    upload_param: Option<&str>,
+    filekey: &str,
+) -> Result<String, String> {
+    if let Some(url) = upload_full_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(url.to_string());
+    }
+
+    let upload_param = upload_param
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "getuploadurl 未返回 upload_full_url 或 upload_param。".to_string())?;
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/upload",
+        WEIXIN_CDN_BASE_URL.trim_end_matches('/')
+    ))
+    .map_err(|error| error.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("encrypted_query_param", upload_param)
+        .append_pair("filekey", filekey);
+    Ok(url.to_string())
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -2283,6 +2939,21 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
         result.push(character);
     }
     result
+}
+
+fn token_fingerprint(value: &str) -> String {
+    let chars: Vec<char> = value.trim().chars().collect();
+    if chars.is_empty() {
+        return "len=0".to_string();
+    }
+
+    if chars.len() <= 12 {
+        return format!("len={} <redacted>", chars.len());
+    }
+
+    let prefix: String = chars.iter().take(6).collect();
+    let suffix: String = chars.iter().skip(chars.len().saturating_sub(6)).collect();
+    format!("len={} {}...{}", chars.len(), prefix, suffix)
 }
 
 fn mask_weixin_id(value: &str) -> String {

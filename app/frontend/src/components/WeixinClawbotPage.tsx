@@ -99,6 +99,7 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
   const running = status?.running === true;
   const configured = status?.configured === true;
   const waitingForLogin = qr !== null && !configured;
+  const sessionExpired = !configured && /登录已过期|session timeout/i.test(status?.lastError || '');
   const qrDisplayContent = useMemo(() => (qr ? qr.qrcodeImgContent.trim() : ''), [qr]);
   const stepTitle = running
     ? '微信监听已启动'
@@ -106,21 +107,27 @@ export function WeixinClawbotPage({ onClose, onNotice }: WeixinClawbotPageProps)
       ? '连接已完成，下一步启动监听'
       : waitingForLogin
         ? '请使用微信扫码确认'
-        : '先连接微信 ClawBot';
+        : sessionExpired
+          ? '微信登录已过期'
+          : '先连接微信 ClawBot';
   const stepDescription = running
     ? '现在可以直接在微信里给 ClawBot 发消息；需要暂停时点击停止监听。'
     : configured
       ? 'Token 已保存，但后台还没有开始轮询微信消息。'
       : waitingForLogin
         ? '扫码并在手机端确认后，点击主按钮检查连接；应用也会自动检查。'
-        : '首次使用需要先生成二维码并扫码登录。';
+        : sessionExpired
+          ? '当前连接已经失效，请重新生成二维码并扫码连接。'
+          : '首次使用需要先生成二维码并扫码登录。';
   const primaryActionLabel = running
     ? '停止监听'
     : configured
       ? '启动监听'
       : waitingForLogin
         ? '我已扫码，检查连接'
-        : '生成登录二维码';
+        : sessionExpired
+          ? '重新生成登录二维码'
+          : '生成登录二维码';
   const primaryActionBusy = busy === 'login' || busy === 'check' || busy === 'start' || busy === 'stop' || checking;
   const showResetAction = running || status?.status === 'stopped' || status?.status === 'error';
 

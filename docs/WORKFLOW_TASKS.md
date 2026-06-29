@@ -59,12 +59,15 @@
 | `updated_at` | `TEXT NOT NULL` | UTC RFC3339 timestamp from backend creation. |
 
 ## Tauri Commands
-- `create_workflow_task({ request: { prompt } })`
+- `create_workflow_task({ request: { prompt, modelId } })`
   - Trims `prompt`.
   - Rejects empty task content.
-  - Selects the configured default model, or the first configured model when no default exists.
-  - Sends the raw prompt to the model with a JSON-only normalization prompt.
-  - Accepts plain JSON, fenced JSON, or surrounding text that contains a JSON object.
+  - Uses the selected workflow `modelId` when provided.
+  - Falls back to the configured default model, or the first configured model when no default exists.
+  - Sends the raw prompt to the selected model and requires the model to call the `create_todo` tool.
+  - Reuses saved model settings for temperature, top P, tool choice, parallel tool calls, and extra JSON parameters.
+  - Rejects Todo creation when the selected model's `Tool Choice` is `none`, because `create_todo` requires tool calling.
+  - Reads the tool-call arguments as the normalized task payload before persistence.
   - Requires model `scheduledAt` to be a concrete RFC3339 datetime when the task contains time.
   - If the model returns relative text such as `明天早上9点`, backend falls back to deterministic local parsing.
   - Supported backend time fallbacks include `明天早上9点`, `明早9点`, `后天晚上8点`, `下周一下午3点`, `10分钟后`, `30分钟后`, `半小时后`, and `1小时30分钟后`.
@@ -84,12 +87,23 @@
 - `delete_workflow_task({ request: { id } })`
   - Deletes one concrete task instance from `workflow_tasks`.
   - Does not delete the parent `workflow_task_series` or sibling generated instances.
-- `update_workflow_task({ request: { id, prompt } })`
+- `update_workflow_task({ request: { id, prompt, modelId } })`
   - Reads the selected concrete task and sends it with the natural-language edit instruction to the configured workflow model.
+  - Uses the selected workflow `modelId` when provided.
+  - Reuses saved model settings for temperature, top P, and extra JSON parameters while keeping the update call non-streaming.
   - Requires a JSON object with a `tasks` array.
   - When one task is returned, updates the selected row in place and preserves its status.
   - When multiple tasks are returned, deletes the selected row, creates a new `workflow_task_series`, and inserts one concrete row per returned task.
   - Supports edits that turn a simple task into a recurring set, such as changing `tomorrow 09:00 class` into `every Monday 09:00-18:00 class`.
+
+## Normal Chat Agent Todo Tools
+- The main chat Agent receives `create_todo`, `list_todos`, `update_todo`, and `delete_todo` through `tools::build_tools_for_session`.
+- Tool handlers call workflow-layer CRUD helpers and write the same `workflow_tasks` rows used by the Workflow page.
+- `create_todo` accepts one or more concrete task instances. For recurring user requests, the Agent should expand each occurrence before calling the tool.
+- `list_todos` supports optional `startDate`, `endDate`, `status`, `search`, and `limit` filters.
+- `update_todo` updates one concrete task by id and supports title/content/time/date/metadata/status changes.
+- If one existing task should become multiple recurring tasks, the Agent should call `delete_todo` for the original task and then `create_todo` with the expanded concrete tasks.
+- `delete_todo` deletes one concrete task instance and does not delete sibling generated instances from the same series.
 
 ## Desktop Reminders
 - The Tauri backend starts a workflow reminder loop during app setup.
@@ -101,7 +115,10 @@
 
 ## Frontend
 - `TaskView` loads the selected header date through `loadWorkflowTasksForRangeFromStorage(selectedDate, selectedDate)`.
+- The workflow top bar exposes a `Todo AI 模型` selector fed by saved API model configs.
+- The selected Todo model is persisted as `engine.workflowModelId` in `settings.json`.
 - The task sidebar heading is `今日任务`, and its count is scoped to the selected header date.
+- The task sidebar filter button can switch between selected-date tasks and all saved Todo tasks.
 - When no task is selected, the prompt send button calls `createWorkflowTaskInStorage`.
 - Selecting a sidebar task switches the right panel to task editing mode.
 - Hovering or focusing a sidebar task reveals a delete icon. Deleting removes only that concrete task instance.

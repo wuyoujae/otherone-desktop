@@ -1,3 +1,4 @@
+mod ai_runtime;
 mod ai_test;
 mod app_settings;
 mod artifacts;
@@ -21,6 +22,7 @@ fn main() {
             app_settings::load_app_settings,
             app_settings::save_engine_settings,
             app_settings::migrate_storage_settings,
+            app_settings::clear_all_otherone_data,
             chat::send_chat_message,
             chat::enqueue_chat_message,
             chat::cancel_chat_message,
@@ -30,6 +32,10 @@ fn main() {
             native_dialog::select_directory,
             artifacts::list_file_artifacts,
             plugins::load_plugin_list,
+            plugins::import_skill_from_directory,
+            plugins::import_skill_from_url,
+            plugins::import_mcp_servers,
+            plugins::import_mcp_servers_from_url,
             plugins::install_plugin,
             plugins::uninstall_plugin,
             workflow::create_workflow_task,

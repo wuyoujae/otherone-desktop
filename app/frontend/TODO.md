@@ -180,38 +180,39 @@
 
 ### Approach
 - Keep Weixin ClawBot as a backend-owned channel.
-- Debounce inbound Weixin text messages per sender for a short window before invoking the Agent.
-- Send each collected Weixin text as its own user prompt to the channel Agent path.
-- Use the interactive Agent command sender for messages that arrive while the Weixin Agent run is still active.
+- Process each inbound Weixin text immediately, matching the upstream sample's one-message/one-token flow.
+- Reuse one channel Agent session per Weixin sender within the current ClawBot connection.
 - Keep the channel safety instruction in the Agent system prompt, not inside each stored user message.
-- Reply once to Weixin with the latest inbound `context_token` after the batch Agent run completes.
+- Reply to Weixin with that inbound message's exact `context_token`.
 
 ### Checklist
-- [x] Add channel batch invocation helper in `chat.rs`.
-- [x] Add per-sender pending-message debounce in `weixin_clawbot.rs`.
+- [x] Add channel invocation helper in `chat.rs`.
+- [x] Replace per-sender debounce with immediate per-message processing in `weixin_clawbot.rs`.
 - [x] Reuse the existing Weixin-safe tool scope.
-- [x] Insert mid-run Weixin messages into the active Agent run at framework safe points.
+- [x] Reuse the sender's Weixin Agent session across messages in the same connection.
 - [x] Refresh the Weixin ClawBot page layout and remove the recent-message and safety-boundary cards.
 - [x] Add a reset command and UI action for clearing stale token, polling cursor, queue, active Agent runs, and sender session mapping.
 - [x] Rotate stale Weixin Agent sessions when old localfile history has invalid tool-call ordering.
 - [x] Simplify the Weixin ClawBot page into one primary next-step action plus contextual reset.
 - [x] Move polling cursor persistence after fetched messages are queued.
 - [x] Retry outbound Weixin text sends before recording delivery failure.
-- [x] Keep mid-run Weixin inserts pending until the framework emits `queued_user_prompts`.
+- [x] Avoid debounce/batching so replies follow the upstream sample's one-message/one-token flow.
 - [x] Detect nested iLink business errors such as `base_resp.ret` before marking replies as sent.
+- [x] Treat iLink session timeout/token expiry as a disconnected state that requires a fresh QR login.
+- [x] Add a timeout for Weixin Agent runs so typing state does not hang forever.
 - [x] Update Weixin channel documentation.
 - [x] Verify frontend build and Rust check.
 
 ### Key Decisions
-- First version batches rapid Weixin messages before an Agent run, then enqueues later messages into that active run instead of starting a second stream.
-- The batch window uses the same product behavior as the desktop remorse window: short delay, then send the collected prompts together.
-- Final Weixin reply uses the latest context token seen for that sender during the active run.
+- Weixin channel deliberately avoids batching because iLink delivery is sensitive to replying with the exact inbound `context_token`.
+- Each Weixin sender keeps one Agent session per active ClawBot connection so normal follow-up messages have context.
 - Polling cursor persistence happens after local enqueue so a stopped or failed loop does not skip unqueued Weixin messages.
-- Mid-run context tokens are advanced only after `queued_user_prompts` confirms the prompts were written by the active Agent.
+- Weixin avoids mid-run Agent insertion because the upstream ClawBot examples use one inbound message per outbound reply.
 - Outbound text sends use a small retry loop; final failure is recorded as an outbound error event.
+- `session timeout` / expired token is not retried indefinitely; the stored token is cleared and the UI returns to QR login.
+- Weixin Agent runs have a bounded wait time and send a fallback instead of leaving Weixin in typing state forever.
 - Reset is intentionally local-only: it stops polling, cancels active channel Agent runs, clears stored channel state, and requires a fresh QR login.
-- After reset, delayed Weixin batches from the old connection are dropped and the next inbound message creates a fresh Agent session.
-- New sender session mappings use a unique session id so reset/retry does not reuse a poisoned localfile history.
+- After reset, delayed Weixin work from the old connection is dropped and the next inbound message creates a fresh Agent session.
 
 ## Desktop Long-Term Memory Enablement
 
@@ -293,6 +294,60 @@
 - Completed tasks are skipped.
 - A task with no `start_at` or `scheduled_at` is not eligible for reminders.
 
+## Workflow Todo Model Selection
+
+### Approach
+- Add a Todo model selector to the workflow top bar using configured API models.
+- Persist the selected model in existing engine settings as `workflowModelId`.
+- Pass the selected model id into workflow create and update commands.
+- Use the selected model for both Todo creation and natural-language modification.
+
+### Checklist
+- [x] Add persisted `workflowModelId` setting.
+- [x] Add workflow top-bar Todo model selector.
+- [x] Pass `modelId` through frontend workflow storage calls.
+- [x] Use selected model in backend workflow model selection.
+- [x] Verify frontend build and Rust check.
+
+### Key Decisions
+- If no Todo model is selected, the backend falls back to the default model, then the first configured model.
+- Creating a Todo now uses the workflow model instead of the fallback-only local parser.
+
+## Workflow Todo AI Config Reuse
+
+### Approach
+- Add a shared Tauri backend AI runtime helper module for provider parsing, text validation, tool choice parsing, model selection, and extra parameter merging.
+- Keep Workflow Todo creation as a workflow-owned one-shot model call, but reuse the same saved model configuration semantics as chat.
+- Register only the `create_todo` tool for Todo creation.
+
+### Checklist
+- [x] Add `ai_runtime` shared backend module.
+- [x] Move chat provider/tool-choice/extra-param helpers to the shared module.
+- [x] Update Workflow Todo creation and modification model calls to use saved model temperature, top P, tool choice, parallel tool setting, and extra params.
+- [x] Fail fast when the selected Todo model has tool choice set to `none`.
+- [x] Verify Rust check and frontend build.
+
+### Key Decisions
+- Do not reuse the chat session/streaming path for Todo creation because Todo needs a synchronous persisted task result and a narrow tool surface.
+- Reuse model configuration semantics so Workflow Todo behaves consistently with the normal AI chat model settings.
+
+## Workflow Todo Agent Tools
+
+### Approach
+- Add backend Todo CRUD helpers in the workflow module for normal chat Agent tools.
+- Register `create_todo`, `list_todos`, `update_todo`, and `delete_todo` through the existing `build_tools_for_session` path.
+- Keep the Workflow page and normal chat Agent reading and writing the same `workflow_tasks` rows.
+
+### Checklist
+- [x] Add workflow-layer CRUD helpers for Agent tools.
+- [x] Add Todo tool definitions and runtime handlers to the main Agent tool registry.
+- [x] Update Workflow Todo documentation with the Agent tool contract.
+- [x] Verify Rust check and frontend build.
+
+### Key Decisions
+- Todo tools accept concrete normalized task data; the Agent expands recurring natural-language requests into multiple concrete tasks before calling `create_todo`.
+- `update_todo` updates one concrete task. If one task becomes multiple recurring tasks, the Agent should call `delete_todo` and then `create_todo`.
+
 ## Windows Custom Title Bar
 
 ### Approach
@@ -309,3 +364,105 @@
 ### Key Decisions
 - No new dependency is needed; reuse `@tauri-apps/api/window` and `lucide-react`.
 - The title bar is shell-only and does not add new navigation or business state.
+
+## Clear All Otherone Data
+
+### Approach
+- Wire the storage settings danger action to a Tauri command.
+- Clear only app-managed local data: SQLite files, installed plugin files, dialogue localfile/memory data, and artifact directory contents.
+- Reset frontend runtime caches after the backend clear succeeds.
+
+### Checklist
+- [x] Add backend clear command with confirmation and active-chat guard.
+- [x] Reset Weixin channel and plugin in-memory state during clear.
+- [x] Connect the storage settings button to a danger confirmation dialog.
+- [x] Clear frontend sessions, artifacts, stream buffers, and pending send timers after success.
+
+### Key Decisions
+- Keep `settings.json` and current storage paths so the app can recreate empty data in the same configured locations.
+- Do not wipe unknown files directly under `dataRoot`; only known managed files and directories are removed there.
+
+## Skill Import
+
+### Approach
+- Let the Skill market import either a local directory that contains `SKILL.md` or a remote `SKILL.md` URL.
+- Copy local directories into `dataRoot/skills/imported/<skill-name>`; save URL imports as `dataRoot/skills/imported/<skill-name>/SKILL.md`.
+- Install imported skills through the existing `plugin_installs` table.
+- Keep imported skills discoverable beside bundled resource skills.
+
+### Checklist
+- [x] Add backend validation, copy, discovery, and install behavior for imported skill directories.
+- [x] Connect the Skill tab import card to directory selection and refresh.
+- [x] Add remote `SKILL.md` URL download, validation, and install behavior.
+- [x] Add a Skill import panel for URL input plus local directory selection.
+- [x] Document the local skill import path and first-version limits.
+- [x] Verify frontend build and Rust check.
+
+### Key Decisions
+- URL import supports direct `SKILL.md` text only, not zip packages.
+- Imported skill names must come from `SKILL.md` frontmatter and use lowercase letters, numbers, and hyphens.
+
+## MCP Import
+
+### Approach
+- Let the MCP market import server configuration from pasted JSON or a remote JSON URL.
+- Accept the common `mcpServers` wrapper and a single-server object with `name`.
+- Store imported server definitions in SQLite `mcp_servers`; keep enabled state in `plugin_installs` with `kind = 'mcp'`.
+- Keep this feature scoped to configuration management; runtime MCP tool execution remains a later adapter task.
+
+### Checklist
+- [x] Add backend MCP JSON parsing, validation, URL download, and SQLite persistence.
+- [x] Add MCP install/uninstall behavior using the existing plugin install table.
+- [x] Load imported MCP entries into the plugin manager and MCP tab.
+- [x] Connect the MCP tab import card to URL and JSON import actions.
+- [x] Document supported import formats, validation, persistence, and runtime limits.
+- [x] Verify frontend build and Rust check.
+
+### Key Decisions
+- Support `stdio`, `http`, and `sse` transports because the project docs already call out stdio, SSE, and streamable HTTP as the future `otherone-mcp` path.
+- URL import supports direct UTF-8 JSON only, not zip packages.
+- Imported MCP configs may contain secrets in `env` or `headers`; they are stored locally as plain JSON until the app gets encrypted secret storage.
+
+## Weixin ClawBot Full Tools And File Delivery
+
+### Approach
+- Reuse the normal desktop Agent tool surface for Weixin channel runs only after an explicit permission decision.
+- Keep one Agent session per Weixin sender so tool results and follow-up questions share context.
+- Record both `write_file` and `edit_file` results as app file artifacts for channel sessions.
+- Provide a Weixin-only `send_file_to_weixin` tool for existing files or files generated by shell/PowerShell/REPL.
+- After the channel Agent run completes, inspect new file artifacts from that run and send eligible files back through the Weixin iLink media pipeline.
+- Implement Weixin file delivery from the official `@tencent-weixin/openclaw-weixin@2.4.6` flow: `getuploadurl` with `media_type=FILE`, AES-128-ECB/PKCS7 encrypt, CDN `POST application/octet-stream`, read `x-encrypted-param`, then `sendmessage` with a single `FILE` item.
+
+### Checklist
+- [x] Confirm whether Weixin ClawBot should default to full desktop tools or use a visible full-permission toggle.
+- [x] Switch channel Agent tool scope from `WeixinSafe` to the confirmed full-permission behavior.
+- [x] Add artifact recording for successful `write_file` results without changing the Agent-visible tool schema.
+- [x] Track artifact IDs seen before a Weixin run and collect only newly created artifacts after the run.
+- [x] Add a Weixin-only tool for marking existing local files to be sent back.
+- [x] Add Weixin CDN upload helpers for file attachments.
+- [x] Add Weixin `send_file` / file item message send with retry and sanitized debug logs.
+- [x] Use collision-resistant client IDs for separate text/file `sendmessage` calls.
+- [x] Send the text reply first, then send each generated file as a separate Weixin file message.
+- [x] Update Weixin channel documentation and session artifact documentation.
+- [x] Verify Rust format/check and frontend build.
+- [ ] Run one manual Weixin file-send test after扫码连接.
+
+### User Decisions
+- Permission mode: default full tools for all Weixin senders.
+- File sending scope: send only files created/edited by the current Agent run, not arbitrary local paths the model happens to mention.
+- File type scope: first version sends regular file attachments only; image/video-specific rendering can follow after attachment delivery is stable.
+
+### Rationale
+- Reusing `FullDesktop` keeps Weixin behavior aligned with the normal OtherOne client and avoids maintaining a parallel tool registry.
+- Sending only current-run artifacts prevents accidental exfiltration of unrelated local files while still satisfying "AI generated a file and sends it back".
+- Official iLink media sending uses one item per `sendmessage`; following that structure avoids silent delivery failures.
+
+### Risks
+- Full desktop tools allow Weixin-originated messages to read/write local files and execute commands through the model.
+- CDN media upload may fail because Tencent can change iLink response fields or rate limits.
+- Large generated files can make Agent runs and Weixin delivery slow; the first implementation should cap file size.
+
+### Rollback
+- Restore Weixin channel runs to `AgentToolScope::WeixinSafe`.
+- Disable the post-run artifact-to-Weixin delivery step while keeping normal text replies.
+- Keep new artifact records harmless in SQLite; they only affect file panels and optional file delivery.

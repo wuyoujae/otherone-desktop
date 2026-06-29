@@ -72,8 +72,77 @@ pub(crate) fn record_edit_file_artifact(
         .or_else(|| value.get("structured_patch"))
         .map(Value::to_string)
         .unwrap_or_else(|| "[]".to_string());
-    let mut artifact =
-        build_file_artifact(session_id, "edited", "edit_file", file_path, patch_json);
+    record_file_artifact(
+        app,
+        session_id,
+        "edited",
+        "edit_file",
+        file_path,
+        patch_json,
+    )
+}
+
+pub(crate) fn record_write_file_artifact(
+    app: &AppHandle,
+    session_id: &str,
+    tool_result: &str,
+) -> Result<(), String> {
+    let value: Value = serde_json::from_str(tool_result).map_err(|error| error.to_string())?;
+    if value.get("error").is_some() {
+        return Ok(());
+    }
+
+    let Some(file_path) = value
+        .get("filePath")
+        .or_else(|| value.get("file_path"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return Ok(());
+    };
+
+    let action = match value
+        .get("type")
+        .or_else(|| value.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("update")
+    {
+        "create" => "added",
+        _ => "edited",
+    };
+    let patch_json = value
+        .get("structuredPatch")
+        .or_else(|| value.get("structured_patch"))
+        .map(Value::to_string)
+        .unwrap_or_else(|| "[]".to_string());
+
+    record_file_artifact(app, session_id, action, "write_file", file_path, patch_json)
+}
+
+pub(crate) fn record_weixin_send_file_artifact(
+    app: &AppHandle,
+    session_id: &str,
+    file_path: &str,
+) -> Result<(), String> {
+    record_file_artifact(
+        app,
+        session_id,
+        "attached",
+        "send_file_to_weixin",
+        file_path,
+        "[]".to_string(),
+    )
+}
+
+fn record_file_artifact(
+    app: &AppHandle,
+    session_id: &str,
+    action: &str,
+    tool_name: &str,
+    file_path: &str,
+    patch_json: String,
+) -> Result<(), String> {
+    let mut artifact = build_file_artifact(session_id, action, tool_name, file_path, patch_json);
 
     let conn = storage::open_database(app)?;
     storage::init_database(&conn)?;

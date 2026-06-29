@@ -2,8 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use walkdir::WalkDir;
 
-use crate::chat;
+use otherone::Otherone;
+
+use crate::{chat, plugins, session, weixin_clawbot};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +25,8 @@ pub struct EngineSettings {
     pub threshold_percentage: f32,
     pub compaction_keep_ratio: f32,
     pub compact_model_id: String,
+    #[serde(default)]
+    pub workflow_model_id: String,
     pub default_reasoning_effort: String,
 }
 
@@ -42,6 +47,12 @@ pub struct SaveEngineSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct MigrateStorageSettingsRequest {
     pub storage: StorageSettings,
+    pub acknowledged_data_loss_risk: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearAllOtheroneDataRequest {
     pub acknowledged_data_loss_risk: bool,
 }
 
@@ -83,6 +94,28 @@ pub fn migrate_storage_settings(
 
     settings.storage = next.clone();
     save_settings(&app, &settings)?;
+
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn clear_all_otherone_data(
+    app: AppHandle,
+    request: ClearAllOtheroneDataRequest,
+) -> Result<AppSettings, String> {
+    if !request.acknowledged_data_loss_risk {
+        return Err("需要先确认会清空本地 otherone 数据。".to_string());
+    }
+
+    if chat::has_active_chat() {
+        return Err("当前有对话正在执行，不能清空本地数据。".to_string());
+    }
+
+    let settings = load_settings(&app)?;
+
+    weixin_clawbot::reset_weixin_runtime_state()?;
+    clear_managed_data(&app, &settings.storage)?;
+    plugins::reset_plugin_runtime_state()?;
 
     Ok(settings)
 }
@@ -142,6 +175,7 @@ fn default_settings(app: &AppHandle) -> Result<AppSettings, String> {
             threshold_percentage: 0.8,
             compaction_keep_ratio: 0.35,
             compact_model_id: String::new(),
+            workflow_model_id: String::new(),
             default_reasoning_effort: "medium".to_string(),
         },
     })
@@ -177,6 +211,7 @@ fn normalize_engine_settings(engine: EngineSettings) -> EngineSettings {
         threshold_percentage,
         compaction_keep_ratio,
         compact_model_id: engine.compact_model_id,
+        workflow_model_id: engine.workflow_model_id,
         default_reasoning_effort,
     }
 }
@@ -222,6 +257,132 @@ fn copy_managed_data(previous: &StorageSettings, next: &StorageSettings) -> Resu
     )?;
 
     Ok(())
+}
+
+fn clear_managed_data(app: &AppHandle, storage: &StorageSettings) -> Result<(), String> {
+    let data_root = PathBuf::from(&storage.data_root);
+    let artifact_root = PathBuf::from(&storage.artifact_root);
+    let dialogue_root = PathBuf::from(&storage.dialogue_root);
+    let data_root_absolute = absolute_target_path(&data_root)?;
+
+    fs::create_dir_all(&data_root).map_err(|error| error.to_string())?;
+    clear_sqlite_files(&data_root)?;
+    clear_directory_contents_if_exists(&data_root.join("plugins"))?;
+
+    ensure_clear_root_is_safe(app, "产物存储目录", &artifact_root, &data_root_absolute)?;
+    ensure_clear_root_is_safe(app, "对话数据目录", &dialogue_root, &data_root_absolute)?;
+
+    clear_directory_contents(&artifact_root)?;
+    clear_directory_contents(&dialogue_root)?;
+
+    fs::create_dir_all(&data_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&artifact_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&dialogue_root).map_err(|error| error.to_string())?;
+
+    let _lock = session::LOCALFILE_STORAGE_LOCK
+        .lock()
+        .map_err(|_| "无法锁定 otherone localfile 存储。".to_string())?;
+    Otherone::set_localfile_root(&dialogue_root);
+    otherone::memory::set_memory_storage_root(&dialogue_root);
+
+    Ok(())
+}
+
+fn clear_sqlite_files(data_root: &Path) -> Result<(), String> {
+    for file_name in [
+        "otherone.sqlite",
+        "otherone.sqlite-wal",
+        "otherone.sqlite-shm",
+        "otherone.sqlite-journal",
+    ] {
+        remove_file_if_exists(&data_root.join(file_name))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_clear_root_is_safe(
+    app: &AppHandle,
+    label: &str,
+    root: &Path,
+    data_root_absolute: &Path,
+) -> Result<PathBuf, String> {
+    let root_absolute = absolute_target_path(root)?;
+
+    if root_absolute.file_name().is_none() {
+        return Err(format!("{label} 不能是磁盘根目录。"));
+    }
+
+    if root_absolute == data_root_absolute {
+        return Err(format!(
+            "{label} 不能与数据存储路径相同，避免误删 settings.json。请先迁移到单独目录。"
+        ));
+    }
+
+    if data_root_absolute.starts_with(&root_absolute) {
+        return Err(format!(
+            "{label} 不能包含数据存储路径，避免误删 SQLite 和设置文件。请先迁移到单独目录。"
+        ));
+    }
+
+    let settings_absolute = absolute_target_path(&settings_path(app)?)?;
+    if settings_absolute.starts_with(&root_absolute) {
+        return Err(format!(
+            "{label} 不能包含 settings.json，避免清空后丢失存储路径配置。"
+        ));
+    }
+
+    Ok(root_absolute)
+}
+
+fn clear_directory_contents_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    clear_directory_contents(path)
+}
+
+fn clear_directory_contents(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        fs::create_dir_all(path).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("不能清空符号链接目录：{}", path.display()));
+    }
+
+    if !metadata.is_dir() {
+        return Err(format!("目标不是目录：{}", path.display()));
+    }
+
+    for entry_result in WalkDir::new(path)
+        .min_depth(1)
+        .contents_first(true)
+        .follow_links(false)
+    {
+        let entry = entry_result.map_err(|error| error.to_string())?;
+        let entry_path = entry.path();
+        let file_type = entry.file_type();
+
+        if file_type.is_dir() {
+            fs::remove_dir(entry_path).map_err(|error| error.to_string())?;
+        } else {
+            remove_file_if_exists(entry_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    fs::remove_file(path).map_err(|error| error.to_string())
 }
 
 fn verify_storage_targets(storage: &StorageSettings) -> Result<(), String> {
