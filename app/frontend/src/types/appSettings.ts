@@ -14,6 +14,7 @@ export type EngineSettings = {
   compactionKeepRatio: number;
   compactModelId: string;
   workflowModelId: string;
+  todoReminderLeadMinutes: number;
   defaultReasoningEffort: ReasoningEffort;
 };
 
@@ -30,5 +31,6 @@ export const defaultEngineSettings: EngineSettings = {
   compactionKeepRatio: 0.35,
   compactModelId: '',
   workflowModelId: '',
+  todoReminderLeadMinutes: 3,
   defaultReasoningEffort: 'medium',
 };

@@ -2842,6 +2842,25 @@ input {
   border-color: var(--border-focus);
 }
 
+.setting-inline-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.setting-number-input {
+  width: 88px;
+  height: 38px;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.setting-unit-label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .setting-btn-danger {
   color: var(--danger-color);
   border-color: var(--danger-color);

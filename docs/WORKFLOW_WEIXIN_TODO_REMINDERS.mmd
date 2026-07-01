@@ -1,0 +1,21 @@
+flowchart TD
+  A["Settings > General"] --> B["todoReminderLeadMinutes 1-60"]
+  B --> C["settings.json engine"]
+  C --> D["workflow reminder loop every 5s"]
+  D --> E["Scan pending tasks within configured window"]
+  E --> F["Desktop notification"]
+  E --> G["Weixin ClawBot reminder"]
+
+  F --> H["reminder_notified_at / reminder_target_at"]
+  G --> I["weixin_reminder_notified_at / weixin_reminder_target_at"]
+
+  G --> J["Load connected ClawBot account"]
+  J --> K["Find most recent weixin_clawbot_sessions row"]
+  K --> L["Send fixed Todo reminder text with last_context_token"]
+  L --> M{"Send ok?"}
+  M -->|"yes"| I
+  M -->|"no"| N["Record outbound event; do not mark as sent"]
+
+  O["Key decision"] --> P["Desktop and Weixin reminders are independently deduplicated"]
+  O --> Q["First version does not call AI for reminder wording"]
+  O --> R["Requires an existing Weixin ClawBot session context token"]

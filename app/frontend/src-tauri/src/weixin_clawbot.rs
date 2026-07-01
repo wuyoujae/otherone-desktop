@@ -281,6 +281,197 @@ pub(crate) fn reset_weixin_runtime_state() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) async fn send_todo_reminder_to_recent_session(
+    app: &AppHandle,
+    reminder_body: &str,
+) -> Result<bool, String> {
+    weixin_debug("todo reminder send helper entered");
+    let reminder_body = reminder_body.trim();
+    if reminder_body.is_empty() {
+        return Err("Todo reminder body cannot be empty.".to_string());
+    }
+
+    let (account, from_user_id, context_token) = {
+        let conn = storage::open_database(app)?;
+        weixin_debug("todo reminder db opened");
+        let Some(account) = load_account_from_conn(&conn, DEFAULT_ACCOUNT_ID)? else {
+            weixin_debug("todo reminder skipped: account is not configured");
+            return Ok(false);
+        };
+        weixin_debug(format!(
+            "todo reminder account loaded status={} token_present={}",
+            account.status,
+            !account.bot_token.trim().is_empty()
+        ));
+
+        if account.bot_token.trim().is_empty() {
+            weixin_debug("todo reminder skipped: account has no bot token");
+            return Ok(false);
+        }
+
+        if !matches!(account.status.as_str(), "connected" | "running") {
+            weixin_debug(format!(
+                "todo reminder attempting send while account status={}",
+                account.status
+            ));
+        }
+
+        let Some((from_user_id, context_token)) = load_recent_weixin_session_from_conn(&conn)?
+        else {
+            weixin_debug("todo reminder skipped: no recent weixin session");
+            return Ok(false);
+        };
+        (account, from_user_id, context_token)
+    };
+    weixin_debug(format!(
+        "todo reminder session loaded to={} context={}",
+        mask_weixin_id(&from_user_id),
+        token_fingerprint(&context_token)
+    ));
+    let text = format!("Todo \u{63d0}\u{9192}: {reminder_body}");
+    let mut last_error = String::new();
+
+    for attempt in 1..=MESSAGE_SEND_RETRY_ATTEMPTS {
+        weixin_debug(format!(
+            "todo reminder send attempt={} to={} context={} text_preview={:?}",
+            attempt,
+            mask_weixin_id(&from_user_id),
+            token_fingerprint(&context_token),
+            truncate_text(&text, 120)
+        ));
+        match send_todo_reminder_message(&account, &from_user_id, &context_token, &text).await {
+            Ok(()) => {
+                weixin_debug(format!(
+                    "todo reminder send ok to={} context={}",
+                    mask_weixin_id(&from_user_id),
+                    token_fingerprint(&context_token)
+                ));
+                record_event(
+                    app,
+                    DEFAULT_ACCOUNT_ID,
+                    "outbound",
+                    &from_user_id,
+                    &text,
+                    "todo_reminder_sent",
+                    "",
+                );
+                return Ok(true);
+            }
+            Err(error) => {
+                last_error = error;
+                weixin_debug(format!(
+                    "todo reminder send failed attempt={} error={}",
+                    attempt, last_error
+                ));
+                if is_weixin_session_expired_error(&last_error) {
+                    let _ = expire_weixin_session(app, DEFAULT_ACCOUNT_ID, &last_error);
+                    break;
+                }
+            }
+        }
+
+        if attempt < MESSAGE_SEND_RETRY_ATTEMPTS {
+            thread::sleep(StdDuration::from_millis(MESSAGE_SEND_RETRY_DELAY_MS));
+        }
+    }
+
+    record_event(
+        app,
+        DEFAULT_ACCOUNT_ID,
+        "outbound",
+        &from_user_id,
+        &text,
+        "todo_reminder_failed",
+        &last_error,
+    );
+
+    Err(if last_error.is_empty() {
+        "Weixin Todo reminder send failed.".to_string()
+    } else {
+        last_error
+    })
+}
+
+async fn send_todo_reminder_message(
+    account: &WeixinAccount,
+    to_user_id: &str,
+    context_token: &str,
+    text: &str,
+) -> Result<(), String> {
+    weixin_debug("todo reminder creating async ilink client");
+    let client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(15))
+        .no_proxy()
+        .build()
+        .map_err(|error| error.to_string())?;
+    weixin_debug("todo reminder async ilink client ready");
+
+    let base_url = normalize_base_url(&account.base_url);
+    let path = "ilink/bot/sendmessage";
+    let body = json!({
+        "msg": {
+            "from_user_id": "",
+            "to_user_id": to_user_id,
+            "client_id": build_weixin_client_id(),
+            "message_type": 2,
+            "message_state": 2,
+            "context_token": context_token,
+            "item_list": [
+                {
+                    "type": 1,
+                    "text_item": {
+                        "text": text,
+                    },
+                },
+            ],
+        },
+        "base_info": base_info(),
+    });
+
+    if should_log_ilink_path(path) {
+        weixin_debug(format!(
+            "HTTP POST {} base_url={} token_present={} body={}",
+            path,
+            base_url,
+            !account.bot_token.trim().is_empty(),
+            summarize_debug_json(&body)
+        ));
+    }
+
+    let request = client
+        .post(format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        ))
+        .json(&body);
+    let response = with_async_ilink_headers(request, Some(&account.bot_token))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let value = parse_async_response(path, response).await?;
+    ensure_api_success(&value)
+}
+
+fn with_async_ilink_headers(
+    request: reqwest::RequestBuilder,
+    bot_token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let uin = next_uin().to_string();
+    let mut request = request
+        .header("Content-Type", "application/json")
+        .header("AuthorizationType", "ilink_bot_token")
+        .header("X-WECHAT-UIN", base64_encode(uin.as_bytes()))
+        .header("iLink-App-Id", ILINK_APP_ID)
+        .header("iLink-App-ClientVersion", ILINK_APP_CLIENT_VERSION);
+
+    if let Some(token) = bot_token.map(str::trim).filter(|value| !value.is_empty()) {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+
+    request
+}
+
 #[tauri::command]
 pub fn weixin_clawbot_status(app: AppHandle) -> Result<WeixinClawbotStatus, String> {
     build_status(&app)
@@ -1703,6 +1894,24 @@ fn load_account(app: &AppHandle, account_id: &str) -> Result<Option<WeixinAccoun
     load_account_from_conn(&conn, account_id)
 }
 
+fn load_recent_weixin_session_from_conn(
+    conn: &Connection,
+) -> Result<Option<(String, String)>, String> {
+    conn.query_row(
+        "SELECT from_user_id, last_context_token
+         FROM weixin_clawbot_sessions
+         WHERE account_id = ?1
+           AND from_user_id <> ''
+           AND last_context_token <> ''
+         ORDER BY last_message_at DESC
+         LIMIT 1",
+        params![DEFAULT_ACCOUNT_ID],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
 fn load_account_from_conn(
     conn: &Connection,
     account_id: &str,
@@ -1964,6 +2173,7 @@ impl IlinkClient {
     ) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(timeout)
+            .no_proxy()
             .build()
             .map_err(|error| error.to_string())?;
 
@@ -2445,6 +2655,35 @@ fn parse_response(path: &str, response: reqwest::blocking::Response) -> Result<V
     }
 
     serde_json::from_str(&text).map_err(|error| format!("iLink 返回不是有效 JSON：{error}"))
+}
+
+async fn parse_async_response(path: &str, response: reqwest::Response) -> Result<Value, String> {
+    let status = response.status();
+    let text = response.text().await.map_err(|error| error.to_string())?;
+
+    if should_log_ilink_path(path) {
+        weixin_debug(format!(
+            "HTTP {} response status={} body={}",
+            path,
+            status.as_u16(),
+            summarize_debug_response(path, &text)
+        ));
+    }
+
+    if !status.is_success() {
+        return Err(format!(
+            "iLink HTTP {}: {}",
+            status.as_u16(),
+            truncate_text(&text, 200)
+        ));
+    }
+
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+
+    serde_json::from_str(&text)
+        .map_err(|error| format!("iLink response is not valid JSON: {error}"))
 }
 
 fn ensure_api_success(value: &Value) -> Result<(), String> {

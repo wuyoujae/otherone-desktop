@@ -27,6 +27,8 @@ pub struct EngineSettings {
     pub compact_model_id: String,
     #[serde(default)]
     pub workflow_model_id: String,
+    #[serde(default = "default_todo_reminder_lead_minutes")]
+    pub todo_reminder_lead_minutes: u32,
     pub default_reasoning_effort: String,
 }
 
@@ -176,6 +178,7 @@ fn default_settings(app: &AppHandle) -> Result<AppSettings, String> {
             compaction_keep_ratio: 0.35,
             compact_model_id: String::new(),
             workflow_model_id: String::new(),
+            todo_reminder_lead_minutes: default_todo_reminder_lead_minutes(),
             default_reasoning_effort: "medium".to_string(),
         },
     })
@@ -212,8 +215,13 @@ fn normalize_engine_settings(engine: EngineSettings) -> EngineSettings {
         compaction_keep_ratio,
         compact_model_id: engine.compact_model_id,
         workflow_model_id: engine.workflow_model_id,
+        todo_reminder_lead_minutes: engine.todo_reminder_lead_minutes.clamp(1, 60),
         default_reasoning_effort,
     }
+}
+
+fn default_todo_reminder_lead_minutes() -> u32 {
+    3
 }
 
 fn normalize_path_or_default(value: &str, default_value: &str) -> Result<String, String> {

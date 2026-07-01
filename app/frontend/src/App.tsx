@@ -2551,6 +2551,33 @@ export function App() {
                     </button>
                   </div>
                 </div>
+                <div className="setting-item">
+                  <div className="setting-item-info">
+                    <span>Todo 提醒时间</span>
+                    <small>任务开始前提前 1-60 分钟发送桌面和微信 ClawBot 提醒。</small>
+                  </div>
+                  <div className="setting-inline-controls">
+                    <input
+                      className="model-input setting-number-input"
+                      min={1}
+                      max={60}
+                      type="number"
+                      value={engineSettings.todoReminderLeadMinutes}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        const nextValue = Number.isFinite(value) ? Math.max(1, Math.min(60, value)) : 3;
+                        setEngineSettings((current) => ({
+                          ...current,
+                          todoReminderLeadMinutes: nextValue,
+                        }));
+                      }}
+                    />
+                    <span className="setting-unit-label">分钟</span>
+                    <button className="setting-btn" type="button" disabled={isSavingEngine} onClick={() => void saveEngineSettings()}>
+                      {isSavingEngine ? '保存中' : '保存'}
+                    </button>
+                  </div>
+                </div>
               </>            )}
 
             <div className={activeSettingsSection === 'api' ? 'settings-panel-active' : 'settings-panel-hidden'}>

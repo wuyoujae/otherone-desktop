@@ -348,6 +348,29 @@
 - Todo tools accept concrete normalized task data; the Agent expands recurring natural-language requests into multiple concrete tasks before calling `create_todo`.
 - `update_todo` updates one concrete task. If one task becomes multiple recurring tasks, the Agent should call `delete_todo` and then `create_todo`.
 
+## Workflow Weixin Todo Reminders
+
+### Approach
+- Add a configurable Todo reminder lead time in general settings, persisted through existing engine settings.
+- Reuse the workflow reminder loop and scan pending tasks within the configured 1-60 minute window.
+- Send desktop and Weixin reminders independently, with separate dedupe columns on `workflow_tasks`.
+- Deliver the first Weixin reminder version as a fixed concise message to the most recent ClawBot session.
+
+### Checklist
+- [x] Add settings field and general-settings UI for Todo reminder lead minutes.
+- [x] Add workflow task columns for Weixin reminder dedupe.
+- [x] Add ClawBot internal send helper for Todo reminders.
+- [x] Wire workflow reminder scan to configurable timing and Weixin delivery.
+- [x] Update Workflow and Weixin documentation.
+- [x] Verify Rust tests/check and frontend build.
+
+### Key Decisions
+- Default reminder lead time remains 3 minutes for compatibility.
+- Stored Todo datetimes are normalized to minute precision before reminder comparison.
+- Weixin reminders require a ClawBot bot token and an existing session context token; stale account status is logged but does not block a send attempt.
+- Weixin reminders have a 10-minute late grace window so a previously missed Weixin send can still be delivered after app restart; desktop notifications remain pre-start only.
+- First version does not call AI for reminder copy; stable fixed reminder text is preferred for time-critical notifications.
+
 ## Windows Custom Title Bar
 
 ### Approach

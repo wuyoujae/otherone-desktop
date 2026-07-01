@@ -32,6 +32,8 @@
 | `model_response` | `TEXT NOT NULL DEFAULT ''` | Raw model response used to create the task. |
 | `reminder_notified_at` | `TEXT` | UTC RFC3339 timestamp for the last successful desktop reminder. |
 | `reminder_target_at` | `TEXT` | Start datetime that was already reminded. If the task start time changes, it can be reminded again. |
+| `weixin_reminder_notified_at` | `TEXT` | UTC RFC3339 timestamp for the last successful Weixin ClawBot reminder. |
+| `weixin_reminder_target_at` | `TEXT` | Start datetime that was already reminded through Weixin ClawBot. |
 | `status` | `TEXT NOT NULL DEFAULT 'pending'` | Task lifecycle state. Supported values are `pending` and `completed`. |
 | `created_at` | `TEXT NOT NULL` | UTC RFC3339 timestamp from backend creation. |
 | `updated_at` | `TEXT NOT NULL` | UTC RFC3339 timestamp from backend creation. |
@@ -107,14 +109,27 @@
 
 ## Desktop Reminders
 - The Tauri backend starts a workflow reminder loop during app setup.
-- Every 30 seconds it scans pending tasks with `start_at` or legacy `scheduled_at`.
-- If the task starts within the next three minutes, the backend sends a desktop system notification.
+- Every 5 seconds it scans pending tasks with `start_at` or legacy `scheduled_at`.
+- The reminder lead time is read from `engine.todoReminderLeadMinutes` in `settings.json`.
+- The saved lead time is clamped to 1-60 minutes and defaults to 3 minutes.
+- Stored Todo datetimes are normalized to minute precision, so reminders compare against `HH:mm:00` instead of model-generated seconds.
+- If the task starts within the configured reminder window, the backend sends a desktop system notification.
 - Completed tasks and tasks without concrete start times are skipped.
 - The backend writes `reminder_target_at` after sending, so the same task/start-time pair only reminds once.
 - If an edited task gets a new start time, it becomes eligible for a new reminder.
 
+## Weixin ClawBot Reminders
+- The same workflow reminder loop also attempts a Weixin ClawBot Todo reminder.
+- Weixin delivery is independently deduplicated through `weixin_reminder_target_at`.
+- The first version sends a fixed concise message, not an AI-generated reminder.
+- If ClawBot has no bot token or no recent session `context_token`, Weixin delivery is skipped without marking the task as reminded.
+- If an older app process already sent the desktop notification but missed Weixin, the next backend run can still send the Weixin reminder within 10 minutes after the task start.
+- If Weixin sends successfully, the backend writes `weixin_reminder_notified_at` and `weixin_reminder_target_at`.
+- Desktop reminder success and Weixin reminder success do not block each other.
+
 ## Frontend
 - `TaskView` loads the selected header date through `loadWorkflowTasksForRangeFromStorage(selectedDate, selectedDate)`.
+- General settings expose `todoReminderLeadMinutes`, allowing 1-60 minutes before Todo start.
 - The workflow top bar exposes a `Todo AI 模型` selector fed by saved API model configs.
 - The selected Todo model is persisted as `engine.workflowModelId` in `settings.json`.
 - The task sidebar heading is `今日任务`, and its count is scoped to the selected header date.

@@ -5,7 +5,7 @@
 Weixin ClawBot is implemented as a backend-owned external message channel.
 It is not installed through the existing Agent plugin registry.
 
-The current version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-message Agent runs, full desktop Agent tools, text replies, generated-file attachment delivery, and basic runtime diagnostics.
+The current version supports one connected Weixin ClawBot account, QR login, text direct-message polling, per-message Agent runs, full desktop Agent tools, text replies, Todo reminders, generated-file attachment delivery, and basic runtime diagnostics.
 
 Reference implementation:
 
@@ -179,6 +179,18 @@ Risk:
 
 - any Weixin sender who can message the connected account can indirectly trigger local tools through the model;
 - future allowlist or confirmation controls should be added before using this channel for untrusted senders.
+
+## Todo Reminder Delivery
+
+- Workflow Todo reminders can send a Weixin text message through ClawBot before a task starts.
+- The reminder lead time is configured in general settings as `engine.todoReminderLeadMinutes`, clamped to 1-60 minutes.
+- The first version sends fixed reminder copy directly through iLink; it does not invoke the Agent to rewrite the message.
+- Delivery uses the most recent row in `weixin_clawbot_sessions` and its `last_context_token`.
+- If ClawBot has no bot token or no recent session token, the reminder is skipped and not marked as delivered.
+- If the stored account status is stale but token and session still exist, the backend attempts delivery and records debug logs for the send result.
+- If desktop reminder delivery happened in an older process without Weixin support, Weixin can still be attempted within 10 minutes after the task start.
+- If iLink reports token/session expiry, the backend expires the ClawBot account and requires a fresh QR login.
+- Workflow stores Weixin reminder dedupe separately from desktop notifications, so one channel failing does not block the other channel.
 
 ## File Attachment Delivery
 

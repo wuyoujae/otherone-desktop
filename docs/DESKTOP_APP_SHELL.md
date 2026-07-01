@@ -13,7 +13,9 @@
 ## Entry Points
 - Web dev server: run `npm run dev` from `app/frontend`, then open `http://127.0.0.1:1420/`.
 - Production web build: run `npm run build` from `app/frontend`.
-- Tauri commands: run `npm run tauri -- <command>` from `app/frontend`.
+- Tauri dev shell: run `npm run tauri dev` from `app/frontend`.
+- On Windows, `npm run tauri ...` uses `app/frontend/scripts/run-tauri.cmd` to load the Visual Studio C++ build environment and set Cargo output to `app/frontend/.tauri-target`.
+- The custom Cargo target directory avoids stale absolute paths in `app/frontend/src-tauri/target` when the project folder moves between drives.
 
 ## Prototype Coverage
 - Sidebar navigation, new chat view, chat history view, settings view, dark/light theme, and input send-button state are implemented.
@@ -22,4 +24,4 @@
 
 ## Verification
 - `npm run build`
-- `cargo check` from `app/frontend/src-tauri`
+- `npm run tauri dev`

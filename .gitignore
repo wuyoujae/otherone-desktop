@@ -7,8 +7,11 @@ app/frontend/dist/
 
 # Tauri / Rust
 app/frontend/src-tauri/target/
+app/frontend/src-tauri/target-codex/
 app/frontend/src-tauri/target-codex-tests/
 app/frontend/src-tauri/gen/
+app/frontend/.tauri-target/
+app/frontend/.codex-run/
 
 # Logs
 *.log

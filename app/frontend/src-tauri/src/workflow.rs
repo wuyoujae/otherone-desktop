@@ -11,9 +11,12 @@ use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::ai_runtime;
+use crate::app_settings;
 use crate::storage::{self, ModelConfig, ProviderConfig};
+use crate::weixin_clawbot;
 
 static WORKFLOW_TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
+const WEIXIN_REMINDER_LATE_GRACE_MINUTES: i64 = 10;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +159,18 @@ struct WorkflowReminderCandidate {
     title: String,
     content: String,
     target_at: String,
+    reminder_target_at: Option<String>,
+    weixin_reminder_target_at: Option<String>,
+}
+
+impl WorkflowReminderCandidate {
+    fn needs_desktop_reminder(&self) -> bool {
+        self.reminder_target_at.as_deref() != Some(self.target_at.as_str())
+    }
+
+    fn needs_weixin_reminder(&self) -> bool {
+        self.weixin_reminder_target_at.as_deref() != Some(self.target_at.as_str())
+    }
 }
 
 pub(crate) fn init_workflow_database(conn: &Connection) -> Result<(), String> {
@@ -178,6 +193,8 @@ pub(crate) fn init_workflow_database(conn: &Connection) -> Result<(), String> {
             model_response TEXT NOT NULL DEFAULT '',
             reminder_notified_at TEXT,
             reminder_target_at TEXT,
+            weixin_reminder_notified_at TEXT,
+            weixin_reminder_target_at TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -299,9 +316,27 @@ pub(crate) fn init_workflow_database(conn: &Connection) -> Result<(), String> {
         "reminder_target_at",
         "ALTER TABLE workflow_tasks ADD COLUMN reminder_target_at TEXT",
     )?;
+    ensure_column(
+        conn,
+        "workflow_tasks",
+        "weixin_reminder_notified_at",
+        "ALTER TABLE workflow_tasks ADD COLUMN weixin_reminder_notified_at TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "workflow_tasks",
+        "weixin_reminder_target_at",
+        "ALTER TABLE workflow_tasks ADD COLUMN weixin_reminder_target_at TEXT",
+    )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_workflow_tasks_reminder
          ON workflow_tasks(status, reminder_target_at)",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_tasks_weixin_reminder
+         ON workflow_tasks(status, weixin_reminder_target_at)",
         [],
     )
     .map_err(|error| error.to_string())?;
@@ -311,32 +346,87 @@ pub(crate) fn init_workflow_database(conn: &Connection) -> Result<(), String> {
 
 pub(crate) fn start_workflow_reminder_loop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(StdDuration::from_secs(30));
+        let mut interval = tokio::time::interval(StdDuration::from_secs(5));
 
         loop {
             interval.tick().await;
 
-            if let Err(error) = scan_and_send_workflow_reminders(&app) {
+            if let Err(error) = scan_and_send_workflow_reminders(&app).await {
                 eprintln!("workflow reminder scan failed: {error}");
             }
         }
     });
 }
 
-fn scan_and_send_workflow_reminders(app: &AppHandle) -> Result<(), String> {
-    let conn = storage::open_database(app)?;
-    storage::init_database(&conn)?;
-    init_workflow_database(&conn)?;
-
+async fn scan_and_send_workflow_reminders(app: &AppHandle) -> Result<(), String> {
+    let settings = app_settings::load_settings(app)?;
+    let lead_minutes = settings.engine.todo_reminder_lead_minutes.clamp(1, 60);
     let now = Utc::now();
-    let reminders = read_due_workflow_reminders(&conn, now)?;
+    let reminders = {
+        let conn = open_workflow_database(app)?;
+        read_due_workflow_reminders(&conn, now, lead_minutes)?
+    };
 
     for reminder in reminders {
-        send_workflow_reminder(app, &reminder)?;
-        mark_workflow_reminder_sent(&conn, &reminder)?;
+        let target_at = parse_reminder_target(&reminder.target_at);
+        let target_is_not_past = target_at.map(|value| value >= now).unwrap_or(false);
+
+        if reminder.needs_desktop_reminder() && target_is_not_past {
+            match send_workflow_reminder(app, &reminder) {
+                Ok(()) => {
+                    let conn = open_workflow_database(app)?;
+                    mark_workflow_reminder_sent(&conn, &reminder)?;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "workflow desktop reminder send failed for task {}: {error}",
+                        reminder.id
+                    );
+                }
+            }
+        }
+
+        if reminder.needs_weixin_reminder() {
+            weixin_clawbot::weixin_debug(format!(
+                "todo reminder due task={} target={} now={} lead_minutes={} late_grace_minutes={}",
+                reminder.id,
+                reminder.target_at,
+                now.to_rfc3339(),
+                lead_minutes,
+                WEIXIN_REMINDER_LATE_GRACE_MINUTES
+            ));
+            let body = format_workflow_reminder_body(&reminder);
+            let send_result = tokio::time::timeout(
+                StdDuration::from_secs(25),
+                weixin_clawbot::send_todo_reminder_to_recent_session(app, &body),
+            )
+            .await
+            .map_err(|_| "Weixin Todo reminder send timed out.".to_string());
+
+            match send_result {
+                Ok(Ok(true)) => {
+                    let conn = open_workflow_database(app)?;
+                    mark_workflow_weixin_reminder_sent(&conn, &reminder)?;
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) | Err(error) => {
+                    eprintln!(
+                        "workflow weixin reminder send failed for task {}: {error}",
+                        reminder.id
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn open_workflow_database(app: &AppHandle) -> Result<Connection, String> {
+    let conn = storage::open_database(app)?;
+    storage::init_database(&conn)?;
+    init_workflow_database(&conn)?;
+    Ok(conn)
 }
 
 #[tauri::command]
@@ -966,15 +1056,22 @@ fn read_workflow_task(conn: &Connection, id: &str) -> Result<WorkflowTask, Strin
 fn read_due_workflow_reminders(
     conn: &Connection,
     now: DateTime<Utc>,
+    lead_minutes: u32,
 ) -> Result<Vec<WorkflowReminderCandidate>, String> {
-    let window_end = now + ChronoDuration::minutes(3);
+    let window_end = now + ChronoDuration::minutes(i64::from(lead_minutes));
+    let weixin_late_start = now - ChronoDuration::minutes(WEIXIN_REMINDER_LATE_GRACE_MINUTES);
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, content, prompt, COALESCE(start_at, scheduled_at) AS target_at
+            "SELECT id,
+                    title,
+                    content,
+                    prompt,
+                    COALESCE(start_at, scheduled_at) AS target_at,
+                    reminder_target_at,
+                    weixin_reminder_target_at
              FROM workflow_tasks
              WHERE status = 'pending'
                AND COALESCE(start_at, scheduled_at) IS NOT NULL
-               AND (reminder_target_at IS NULL OR reminder_target_at != COALESCE(start_at, scheduled_at))
              ORDER BY COALESCE(start_at, scheduled_at) ASC",
         )
         .map_err(|error| error.to_string())?;
@@ -992,6 +1089,8 @@ fn read_due_workflow_reminders(
                 },
                 content: row.get(2)?,
                 target_at: row.get(4)?,
+                reminder_target_at: row.get(5)?,
+                weixin_reminder_target_at: row.get(6)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -1003,7 +1102,13 @@ fn read_due_workflow_reminders(
             continue;
         };
 
-        if target_at >= now && target_at <= window_end {
+        let desktop_due =
+            reminder.needs_desktop_reminder() && target_at >= now && target_at <= window_end;
+        let weixin_due = reminder.needs_weixin_reminder()
+            && target_at >= weixin_late_start
+            && target_at <= window_end;
+
+        if desktop_due || weixin_due {
             reminders.push(reminder);
         }
     }
@@ -1047,9 +1152,34 @@ fn mark_workflow_reminder_sent(
     Ok(())
 }
 
+fn mark_workflow_weixin_reminder_sent(
+    conn: &Connection,
+    reminder: &WorkflowReminderCandidate,
+) -> Result<(), String> {
+    let notified_at = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "UPDATE workflow_tasks
+         SET weixin_reminder_notified_at = ?1,
+             weixin_reminder_target_at = ?2
+         WHERE id = ?3
+           AND status = 'pending'
+           AND COALESCE(start_at, scheduled_at) = ?2",
+        params![
+            notified_at,
+            reminder.target_at.as_str(),
+            reminder.id.as_str(),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 fn parse_reminder_target(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
+        .and_then(floor_datetime_to_minute)
         .map(|date| date.with_timezone(&Utc))
 }
 
@@ -1641,7 +1771,12 @@ fn extract_json_object(raw: &str) -> Option<String> {
 fn normalize_rfc3339(value: &str) -> Option<String> {
     DateTime::parse_from_rfc3339(value)
         .ok()
+        .and_then(floor_datetime_to_minute)
         .map(|value| value.to_rfc3339())
+}
+
+fn floor_datetime_to_minute<Tz: TimeZone>(value: DateTime<Tz>) -> Option<DateTime<Tz>> {
+    value.with_second(0)?.with_nanosecond(0)
 }
 
 fn normalize_ai_datetime(value: Option<&str>, fallback_date: Option<&str>) -> Option<String> {
@@ -1666,7 +1801,7 @@ fn parse_start_datetime_from_text(
     let text = combine_time_text(prompt, time_text);
 
     if let Some(relative) = parse_relative_after_datetime(&text) {
-        return Some(relative.to_rfc3339());
+        return floor_datetime_to_minute(relative).map(|value| value.to_rfc3339());
     }
 
     let time = parse_first_time(&text)?;

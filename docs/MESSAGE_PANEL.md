@@ -5,6 +5,11 @@
 - The current implementation lives in `app/frontend/src/components/MessagePanel.tsx`.
 - Styles live in `app/frontend/src/styles.css`.
 
+## Dependency
+- `react-virtuoso@^4.18.10` is declared in `app/frontend/package.json` for long message list virtualization.
+- Rationale: virtual scrolling is correctness-sensitive UI infrastructure, and the component already uses `Virtuoso`.
+- Alternative considered: a custom windowing implementation; rejected because it would add risk for a single existing use case.
+
 ## Message Groups
 - `user` messages show edit and copy actions.
 - `ai` messages show edit, copy, and create branch actions.
