@@ -16,6 +16,7 @@ import {
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { selectDirectoryFromSystem } from '../services/appSettingsStorage';
 import { loadPluginList, installPlugin, importSkillFromDirectory, importSkillFromUrl, importMcpServers, importMcpServersFromUrl, uninstallPlugin, type PluginEntry } from '../services/pluginService';
+import { isDesktopRuntime } from '../services/platform/runtime';
 
 const iconSize = { width: 16, height: 16 };
 
@@ -169,6 +170,7 @@ function PluginDetail({
 // ═══════════════════════════════════════
 
 export function PluginsPage({ onClose }: PluginsPageProps) {
+  const desktopRuntime = isDesktopRuntime();
   const [tab, setTab] = useState<TabKind>('plugin');
   const [search, setSearch] = useState('');
   const [plugins, setPlugins] = useState<PluginEntry[]>([]);
@@ -412,7 +414,7 @@ export function PluginsPage({ onClose }: PluginsPageProps) {
                       </button>
                     </div>
                     <div className="skill-import-actions">
-                      <button className="skill-import-secondary" type="button" disabled={importingSkill} onClick={() => void handleImportSkillDirectory()}>
+                      <button className="skill-import-secondary" type="button" disabled={importingSkill || !desktopRuntime} onClick={() => void handleImportSkillDirectory()}>
                         选择本地目录
                       </button>
                       <button className="skill-import-secondary" type="button" disabled={importingSkill} onClick={() => setSkillImportOpen(false)}>

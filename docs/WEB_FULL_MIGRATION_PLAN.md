@@ -148,13 +148,24 @@
   - Workflow CRUD works in both runtimes.
   - Artifacts and memory tree load in both runtimes.
 
+## Implementation Status (2026-07-01)
+- Shared backend core exists at `app/backend/core`.
+- Web backend exists at `app/backend/web` and exposes HTTP/SSE routes for settings, API configs, AI model test, chat, sessions, artifacts, memory, workflow, plugins, Skills, and MCP imports.
+- Web chat uses server-side tools from shared core. File tools operate under `OTHERONE_WEB_DATA_ROOT/workspace`, not on the browser user's machine.
+- Web artifact events are published through `/api/artifacts/stream` when Web chat tools create or edit files.
+- Web artifact files are delivered through `/api/artifacts/{artifact_id}/download`; the frontend downloads them instead of trying to reveal server paths on the browser user's machine.
+- Desktop remains on Tauri IPC/event transport and passed `cargo check`.
+- Weixin ClawBot is intentionally excluded from the first Web parity pass and remains a later migration/security task.
+
 ## Initial Checklist
-- [ ] Confirm first Web version is single-user/self-hosted.
-- [ ] Confirm Web full tools are allowed on the server workspace for first version.
-- [ ] Create shared backend core crate.
-- [ ] Add Web backend crate and HTTP/SSE routing.
-- [ ] Move settings/storage/session services into shared core.
-- [ ] Move chat streaming into shared core with runtime event publisher.
-- [ ] Move workflow, artifacts, memory, plugins, and Weixin behind runtime context.
-- [ ] Complete frontend Web-specific states for Desktop-only actions.
-- [ ] Verify Desktop build and Web build.
+- [x] Confirm first Web version is single-user/self-hosted.
+- [x] Confirm Web full tools are allowed on the server workspace for first version.
+- [x] Create shared backend core crate.
+- [x] Add Web backend crate and HTTP/SSE routing.
+- [x] Move settings/storage/session services into shared core.
+- [x] Move chat streaming into shared core with runtime event publisher.
+- [x] Move workflow, artifacts, memory, and plugins behind shared core/runtime context.
+- [x] Add Web artifact download route and frontend download action.
+- [x] Complete frontend Web-specific states for Desktop-only actions.
+- [x] Verify Desktop build and Web build.
+- [ ] Migrate Weixin ClawBot behind runtime context after Web auth/runtime-isolation decisions.

@@ -12,6 +12,11 @@ app/frontend/src-tauri/target-codex-tests/
 app/frontend/src-tauri/gen/
 app/frontend/.tauri-target/
 app/frontend/.codex-run/
+app/backend/core/target/
+app/backend/core/Cargo.lock
+app/backend/web/target/
+app/backend/.smoke-data*/
+app/backend/web/.codex-smoke-data*/
 
 # Logs
 *.log

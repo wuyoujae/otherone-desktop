@@ -2,9 +2,10 @@
 
 ## Scope
 - Keep the existing Tauri desktop app as the fully supported runtime.
-- Prepare the React frontend so it can run in a browser and call a future Web backend.
-- Do not migrate desktop SQLite/localfile behavior in this phase.
-- Do not implement the full Web backend in this phase.
+- Run the React frontend in both Tauri and browser runtimes.
+- Use the shared Rust backend core for business logic.
+- Use Tauri IPC/events for Desktop transport and HTTP/SSE for Web transport.
+- Exclude Weixin ClawBot from the first Web parity pass until Web auth/runtime isolation is designed.
 
 ## Runtime Boundary
 - Desktop runtime: detected by `window.__TAURI_INTERNALS__`.
@@ -24,7 +25,7 @@
 - `src/services/platform/webApi.ts`: Web HTTP request and SSE helpers.
 - Existing `src/services/*` files remain the public service facade for components.
 
-## First Web API Contract Draft
+## Current Web API Contract
 - `GET /api/sessions`
 - `GET /api/sessions/:sessionId`
 - `PATCH /api/sessions/:sessionId/title`
@@ -39,6 +40,7 @@
 - `POST /api/ai-model-test`
 - `GET /api/sessions/:sessionId/artifacts`
 - `GET /api/artifacts/stream` as SSE
+- `GET /api/artifacts/:artifactId/download`
 - `GET /api/memory/tree`
 - `GET /api/workflow/tasks`
 - `POST /api/workflow/tasks`
@@ -51,13 +53,6 @@
 - `POST /api/plugins/skills/import-url`
 - `POST /api/plugins/mcp/import`
 - `POST /api/plugins/mcp/import-url`
-- `GET /api/weixin-clawbot/status`
-- `POST /api/weixin-clawbot/login/begin`
-- `POST /api/weixin-clawbot/login/check`
-- `POST /api/weixin-clawbot/start`
-- `POST /api/weixin-clawbot/stop`
-- `POST /api/weixin-clawbot/reset`
-- `GET /api/weixin-clawbot/events`
 
 ## Key Decisions
 - Keep component imports stable. Components continue importing from `src/services/*`.
@@ -67,8 +62,7 @@
 - No new dependency is needed for the first adapter layer.
 
 ## Risks
-- Web API contracts are a draft until the real Web backend is implemented.
-- SSE streams may need auth/session handling once Web login exists.
+- SSE streams need auth/session handling before this can be exposed as a multi-user public Web product.
 - Desktop-only features such as local directory selection cannot be made Web-compatible without product decisions.
 - Browser preview can show UI but is not a complete product until the Web backend exists.
 
@@ -86,5 +80,11 @@
 ## Current Implementation Status
 - Platform adapters are implemented under `app/frontend/src/services/platform`.
 - Existing frontend service facades now route through desktop IPC or Web API adapters.
-- `npm run build` passes.
-- `cargo check` from plain PowerShell is blocked by missing MSVC `link.exe`; use `app/frontend/scripts/run-tauri.cmd` or a Visual Studio developer shell for Rust/Tauri checks.
+- Shared Rust business logic is implemented in `app/backend/core`.
+- The Web backend is implemented in `app/backend/web`.
+- Web chat, workflow, artifacts, memory, sessions, settings, API configs, plugins, Skill URL import, and MCP import are available through HTTP/SSE.
+- Web file tools are scoped to the server workspace at `OTHERONE_WEB_DATA_ROOT/workspace`.
+- Native filesystem selection/open/reveal remains Desktop-only in the frontend.
+- Weixin ClawBot is not part of the first Web parity pass.
+- `npm run build`, Web backend `cargo check`, Desktop Tauri `cargo check`, and Web route smoke tests pass.
+- `cargo check` from plain PowerShell is blocked by missing MSVC `link.exe`; use a Visual Studio developer shell or call `VsDevCmd.bat` before Rust/Tauri checks.

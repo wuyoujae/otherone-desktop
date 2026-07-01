@@ -34,6 +34,7 @@ type ArtifactsPanelProps = {
   addedFiles: FileArtifact[];
   deletedFiles: FileArtifact[];
   editedFiles: FileArtifact[];
+  openActionLabel?: string;
   onOpenFileLocation?: (item: FileArtifact) => void;
   open: boolean;
 };
@@ -102,7 +103,7 @@ function getFileColor(extension: string): string {
   return '#9ca3af';
 }
 
-export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, onOpenFileLocation, open }: ArtifactsPanelProps) {
+export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, openActionLabel = '打开产物', onOpenFileLocation, open }: ArtifactsPanelProps) {
   const sections: ArtifactSection[] = [
     { id: 'edited', title: '编辑文件', items: editedFiles },
     { id: 'deleted', title: '删除文件', items: deletedFiles },
@@ -118,6 +119,7 @@ export function ArtifactsPanel({ addedFiles, deletedFiles, editedFiles, onOpenFi
             section={section}
             getFileIcon={getFileIcon}
             getFileColor={getFileColor}
+            openActionLabel={openActionLabel}
             onOpenFileLocation={onOpenFileLocation}
           />
         ))}
@@ -130,10 +132,11 @@ type ArtifactSectionProps = {
   section: ArtifactSection;
   getFileIcon: (ext: string) => ReactNode;
   getFileColor: (ext: string) => string;
+  openActionLabel: string;
   onOpenFileLocation?: (item: FileArtifact) => void;
 };
 
-function ArtifactSection({ section, getFileIcon, getFileColor, onOpenFileLocation }: ArtifactSectionProps) {
+function ArtifactSection({ section, getFileIcon, getFileColor, openActionLabel, onOpenFileLocation }: ArtifactSectionProps) {
   const [open, setOpen] = useState(true);
 
   return (
@@ -153,7 +156,7 @@ function ArtifactSection({ section, getFileIcon, getFileColor, onOpenFileLocatio
                 className="artifact-item"
                 key={item.id}
                 type="button"
-                title="在文件管理器中显示"
+                title={openActionLabel}
                 onClick={() => onOpenFileLocation?.(item)}
               >
                 <span className="artifact-item-icon" style={{ color: getFileColor(item.extension) }}>

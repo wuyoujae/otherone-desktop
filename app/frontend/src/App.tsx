@@ -60,7 +60,7 @@ import {
 } from './services/appSettingsStorage';
 import { testAiModel } from './services/aiModelTest';
 import { VirtuosoHandle } from 'react-virtuoso';
-import { listFileArtifacts, listenToFileArtifacts, type FileArtifactRecord } from './services/artifactStorage';
+import { downloadFileArtifact, listFileArtifacts, listenToFileArtifacts, type FileArtifactRecord } from './services/artifactStorage';
 import { cancelChatMessage, enqueueChatMessageToStorage, listenToChatStream, sendChatMessageToStorage, type ChatStreamEvent } from './services/chatStorage';
 import { loadSessionsFromStorage, readSessionFromStorage, updateSessionTitleInStorage } from './services/sessionStorage';
 import { isDesktopRuntime } from './services/platform/runtime';
@@ -604,6 +604,7 @@ function artifactRecordToFileArtifact(record: FileArtifactRecord): FileArtifact 
 }
 
 export function App() {
+  const desktopRuntime = isDesktopRuntime();
   const [view, setView] = useState<ViewName>('new');
   const [theme, setTheme] = useState<ThemeName>('light');
   const [activeItem, setActiveItem] = useState('');
@@ -1288,12 +1289,22 @@ export function App() {
 
   const handleOpenArtifactLocation = useCallback(
     async (item: FileArtifact) => {
-      if (!item.path.trim()) {
+      if (desktopRuntime && !item.path.trim()) {
         pushToast('warn', '无法定位文件', '当前文件路径为空。');
         return;
       }
 
       try {
+        if (!desktopRuntime) {
+          const downloaded = await downloadFileArtifact(item.id, item.name);
+          if (downloaded) {
+            pushToast('success', '产物已开始下载', item.name);
+          } else {
+            pushToast('warn', '无法下载产物', '当前环境未配置 Web API。');
+          }
+          return;
+        }
+
         const opened = await revealFileInSystem(item.path);
         if (!opened) {
           pushToast('warn', '无法定位文件', '当前环境无法打开系统文件管理器。');
@@ -1302,7 +1313,7 @@ export function App() {
         pushToast('error', '定位文件失败', error instanceof Error ? error.message : String(error));
       }
     },
-    [pushToast],
+    [desktopRuntime, pushToast],
   );
 
   const applyFileArtifact = useCallback((record: FileArtifactRecord) => {
@@ -2169,7 +2180,7 @@ export function App() {
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
-      <WindowTitleBar />
+      {desktopRuntime && <WindowTitleBar />}
       <div className="app-body">
       <aside className="sidebar">
         <div className="sidebar-header">
@@ -2205,13 +2216,15 @@ export function App() {
               compact={sidebarCollapsed}
               onClick={() => switchView('personalization', 'personalization')}
             />
-            <SidebarItem
-              active={activeItem === 'weixinClawbot'}
-              icon={<BotMessageSquare style={iconSize} />}
-              label="微信 ClawBot"
-              compact={sidebarCollapsed}
-              onClick={() => switchView('weixinClawbot', 'weixinClawbot')}
-            />
+            {desktopRuntime && (
+              <SidebarItem
+                active={activeItem === 'weixinClawbot'}
+                icon={<BotMessageSquare style={iconSize} />}
+                label="微信 ClawBot"
+                compact={sidebarCollapsed}
+                onClick={() => switchView('weixinClawbot', 'weixinClawbot')}
+              />
+            )}
           </div>
 
           <div className="nav-history">
@@ -2613,19 +2626,19 @@ export function App() {
                       value={storageDraft}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseStoragePath()}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={() => void chooseStoragePath()}>
                         选择目录
                       </button>
                       <button
                         className="setting-btn"
                         type="button"
-                        disabled={isMigratingStorage || !storageDraft.trim()}
+                        disabled={isMigratingStorage || !desktopRuntime || !storageDraft.trim()}
                         onClick={() => void openStorageDirectory('dataRoot', storageDraft)}
                       >
                         <FolderOpen style={iconSize} />
                         打开目录
                       </button>
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveStoragePath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={saveStoragePath}>
                         {isMigratingStorage ? '迁移中' : '保存并迁移'}
                       </button>
                     </div>
@@ -2650,19 +2663,19 @@ export function App() {
                       value={artifactDraft}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseArtifactPath()}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={() => void chooseArtifactPath()}>
                         选择目录
                       </button>
                       <button
                         className="setting-btn"
                         type="button"
-                        disabled={isMigratingStorage || !artifactDraft.trim()}
+                        disabled={isMigratingStorage || !desktopRuntime || !artifactDraft.trim()}
                         onClick={() => void openStorageDirectory('artifactRoot', artifactDraft)}
                       >
                         <FolderOpen style={iconSize} />
                         打开目录
                       </button>
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveArtifactPath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={saveArtifactPath}>
                         {isMigratingStorage ? '迁移中' : '保存并迁移'}
                       </button>
                     </div>
@@ -2687,19 +2700,19 @@ export function App() {
                       value={dialogueDataDraft}
                     />
                     <div className="storage-path-actions">
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={() => void chooseDialogueDataPath()}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={() => void chooseDialogueDataPath()}>
                         选择目录
                       </button>
                       <button
                         className="setting-btn"
                         type="button"
-                        disabled={isMigratingStorage || !dialogueDataDraft.trim()}
+                        disabled={isMigratingStorage || !desktopRuntime || !dialogueDataDraft.trim()}
                         onClick={() => void openStorageDirectory('dialogueRoot', dialogueDataDraft)}
                       >
                         <FolderOpen style={iconSize} />
                         打开目录
                       </button>
-                      <button className="setting-btn" type="button" disabled={isMigratingStorage} onClick={saveDialogueDataPath}>
+                      <button className="setting-btn" type="button" disabled={isMigratingStorage || !desktopRuntime} onClick={saveDialogueDataPath}>
                         {isMigratingStorage ? '迁移中' : '保存并迁移'}
                       </button>
                     </div>
@@ -2720,7 +2733,7 @@ export function App() {
                     <button
                       className="setting-btn setting-btn-danger"
                       type="button"
-                      disabled={isMigratingStorage || isClearingAllData}
+                      disabled={isMigratingStorage || isClearingAllData || !desktopRuntime}
                       onClick={requestClearAllData}
                     >
                       {isClearingAllData ? '清除中' : '全部清除'}
@@ -2774,6 +2787,7 @@ export function App() {
         addedFiles={addedFiles}
         deletedFiles={deletedFiles}
         editedFiles={editedFiles}
+        openActionLabel={desktopRuntime ? '在文件管理器中显示' : '下载产物'}
         onOpenFileLocation={handleOpenArtifactLocation}
         open={artifactsPanelOpen}
       />

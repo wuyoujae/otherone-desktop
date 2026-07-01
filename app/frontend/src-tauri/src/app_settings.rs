@@ -1,49 +1,17 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
 
 use otherone::Otherone;
+use otherone_backend_core::settings as core_settings;
 
 use crate::{chat, plugins, session, weixin_clawbot};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageSettings {
-    pub data_root: String,
-    pub artifact_root: String,
-    pub dialogue_root: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineSettings {
-    pub system_prompt: String,
-    pub max_iterations: u32,
-    pub context_window: u32,
-    pub threshold_percentage: f32,
-    pub compaction_keep_ratio: f32,
-    pub compact_model_id: String,
-    #[serde(default)]
-    pub workflow_model_id: String,
-    #[serde(default = "default_todo_reminder_lead_minutes")]
-    pub todo_reminder_lead_minutes: u32,
-    pub default_reasoning_effort: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppSettings {
-    pub storage: StorageSettings,
-    pub engine: EngineSettings,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveEngineSettingsRequest {
-    pub engine: EngineSettings,
-}
+pub use core_settings::{
+    AppSettings, EngineSettings, RuntimePaths, SaveEngineSettingsRequest, StorageSettings,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,10 +36,7 @@ pub fn save_engine_settings(
     app: AppHandle,
     request: SaveEngineSettingsRequest,
 ) -> Result<AppSettings, String> {
-    let mut settings = load_settings(&app)?;
-    settings.engine = normalize_engine_settings(request.engine);
-    save_settings(&app, &settings)?;
-    Ok(settings)
+    core_settings::save_engine_settings(&runtime_paths(&app)?, request)
 }
 
 #[tauri::command]
@@ -87,15 +52,16 @@ pub fn migrate_storage_settings(
         return Err("当前有对话正在执行，不能迁移存储位置。".to_string());
     }
 
-    let mut settings = load_settings(&app)?;
+    let paths = runtime_paths(&app)?;
+    let mut settings = core_settings::load_settings(&paths)?;
     let previous = settings.storage.clone();
-    let next = normalize_storage_settings(&app, request.storage)?;
+    let next = core_settings::normalize_storage_settings(&paths, request.storage)?;
 
     copy_managed_data(&previous, &next)?;
     verify_storage_targets(&next)?;
 
     settings.storage = next.clone();
-    save_settings(&app, &settings)?;
+    core_settings::save_settings(&paths, &settings)?;
 
     Ok(settings)
 }
@@ -123,124 +89,26 @@ pub fn clear_all_otherone_data(
 }
 
 pub(crate) fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
-    let path = settings_path(app)?;
-
-    if !path.exists() {
-        let settings = default_settings(app)?;
-        save_settings(app, &settings)?;
-        return Ok(settings);
-    }
-
-    let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-    let mut settings =
-        serde_json::from_str::<AppSettings>(&raw).map_err(|error| error.to_string())?;
-    settings.storage = normalize_storage_settings(app, settings.storage)?;
-    settings.engine = normalize_engine_settings(settings.engine);
-    Ok(settings)
-}
-
-pub(crate) fn save_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
-    let path = settings_path(app)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "无法解析设置目录。".to_string())?;
-
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    fs::write(path, raw).map_err(|error| error.to_string())
+    core_settings::load_settings(&runtime_paths(app)?)
 }
 
 pub(crate) fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(load_settings(app)?.storage.data_root))
+    core_settings::data_root(&runtime_paths(app)?)
 }
 
 pub(crate) fn dialogue_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(load_settings(app)?.storage.dialogue_root))
+    core_settings::dialogue_root(&runtime_paths(app)?)
 }
 
-fn default_settings(app: &AppHandle) -> Result<AppSettings, String> {
+fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-
-    Ok(AppSettings {
-        storage: StorageSettings {
-            data_root: path_to_string(&app_data_dir),
-            artifact_root: path_to_string(&app_data_dir.join("artifacts")),
-            dialogue_root: path_to_string(&app_data_dir.join("agent")),
-        },
-        engine: EngineSettings {
-            system_prompt: String::new(),
-            max_iterations: 8,
-            context_window: 16_000,
-            threshold_percentage: 0.8,
-            compaction_keep_ratio: 0.35,
-            compact_model_id: String::new(),
-            workflow_model_id: String::new(),
-            todo_reminder_lead_minutes: default_todo_reminder_lead_minutes(),
-            default_reasoning_effort: "medium".to_string(),
-        },
-    })
-}
-
-fn normalize_storage_settings(
-    app: &AppHandle,
-    storage: StorageSettings,
-) -> Result<StorageSettings, String> {
-    let defaults = default_settings(app)?.storage;
-
-    Ok(StorageSettings {
-        data_root: normalize_path_or_default(&storage.data_root, &defaults.data_root)?,
-        artifact_root: normalize_path_or_default(&storage.artifact_root, &defaults.artifact_root)?,
-        dialogue_root: normalize_path_or_default(&storage.dialogue_root, &defaults.dialogue_root)?,
-    })
-}
-
-fn normalize_engine_settings(engine: EngineSettings) -> EngineSettings {
-    let max_iterations = engine.max_iterations.clamp(1, 128);
-    let context_window = engine.context_window.clamp(1024, 1_000_000);
-    let threshold_percentage = engine.threshold_percentage.clamp(0.1, 0.98);
-    let compaction_keep_ratio = engine.compaction_keep_ratio.clamp(0.05, 0.95);
-    let default_reasoning_effort = match engine.default_reasoning_effort.as_str() {
-        "none" | "low" | "medium" | "high" => engine.default_reasoning_effort,
-        _ => "medium".to_string(),
-    };
-
-    EngineSettings {
-        system_prompt: engine.system_prompt,
-        max_iterations,
-        context_window,
-        threshold_percentage,
-        compaction_keep_ratio,
-        compact_model_id: engine.compact_model_id,
-        workflow_model_id: engine.workflow_model_id,
-        todo_reminder_lead_minutes: engine.todo_reminder_lead_minutes.clamp(1, 60),
-        default_reasoning_effort,
-    }
-}
-
-fn default_todo_reminder_lead_minutes() -> u32 {
-    3
-}
-
-fn normalize_path_or_default(value: &str, default_value: &str) -> Result<String, String> {
-    let raw = if value.trim().is_empty() {
-        default_value
-    } else {
-        value.trim()
-    };
-
-    let path = PathBuf::from(raw);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string())?
-            .join(path)
-    };
-
-    Ok(path_to_string(&absolute))
+    Ok(RuntimePaths::new(
+        app_data_dir.join("settings.json"),
+        app_data_dir,
+    ))
 }
 
 fn copy_managed_data(previous: &StorageSettings, next: &StorageSettings) -> Result<(), String> {
@@ -333,7 +201,7 @@ fn ensure_clear_root_is_safe(
         ));
     }
 
-    let settings_absolute = absolute_target_path(&settings_path(app)?)?;
+    let settings_absolute = absolute_target_path(settings_path(app)?.as_path())?;
     if settings_absolute.starts_with(&root_absolute) {
         return Err(format!(
             "{label} 不能包含 settings.json，避免清空后丢失存储路径配置。"
@@ -503,13 +371,5 @@ fn absolute_target_path(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    Ok(app_data_dir.join("settings.json"))
-}
-
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+    Ok(runtime_paths(app)?.settings_path().to_path_buf())
 }

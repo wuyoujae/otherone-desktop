@@ -1,7 +1,7 @@
 import type { FileArtifact } from '../components/ArtifactsPanel';
 import { isDesktopRuntime } from './platform/runtime';
 import { invokeDesktop, listenDesktop } from './platform/tauri';
-import { canUseWebApi, listenWebApiEventStream, requestWebApi } from './platform/webApi';
+import { canUseWebApi, downloadWebApiFile, listenWebApiEventStream, requestWebApi } from './platform/webApi';
 
 export type FileArtifactAction = 'edited' | 'added' | 'deleted';
 
@@ -36,4 +36,19 @@ export async function listenToFileArtifacts(onEvent: (event: FileArtifactRecord)
   }
 
   return () => undefined;
+}
+
+export async function downloadFileArtifact(artifactId: string, fileName = 'artifact') {
+  const id = artifactId.trim();
+
+  if (!id || isDesktopRuntime()) {
+    return false;
+  }
+
+  if (canUseWebApi()) {
+    await downloadWebApiFile(`/api/artifacts/${encodeURIComponent(id)}/download`, fileName);
+    return true;
+  }
+
+  return false;
 }

@@ -46,6 +46,37 @@ export async function requestWebApi<T>(path: string, options: WebApiRequestOptio
   return JSON.parse(text) as T;
 }
 
+export async function downloadWebApiFile(path: string, fallbackFileName = 'download') {
+  const baseUrl = getWebApiBaseUrl();
+
+  if (!baseUrl) {
+    throw createPlatformUnavailableError('Web API');
+  }
+
+  const response = await fetch(buildWebApiUrl(baseUrl, path), {
+    method: 'GET',
+    headers: {
+      Accept: 'application/octet-stream',
+    },
+  });
+  const textOrBlob = response.ok ? await response.blob() : await response.text();
+
+  if (!response.ok) {
+    throw new Error(readWebApiErrorMessage(textOrBlob as string, response.status));
+  }
+
+  const blob = textOrBlob as Blob;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = readDownloadFilename(response.headers.get('content-disposition')) ?? fallbackFileName;
+  anchor.rel = 'noopener noreferrer';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function listenWebApiEventStream<T>(
   path: string,
   onEvent: (event: T) => void,
@@ -68,6 +99,23 @@ export function listenWebApiEventStream<T>(
   };
 
   return () => source.close();
+}
+
+function readDownloadFilename(contentDisposition: string | null) {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const filenameStar = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (filenameStar) {
+    try {
+      return decodeURIComponent(filenameStar);
+    } catch {
+      return filenameStar;
+    }
+  }
+
+  return contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] ?? null;
 }
 
 function buildWebApiUrl(baseUrl: string, path: string, query?: Record<string, QueryValue>) {
