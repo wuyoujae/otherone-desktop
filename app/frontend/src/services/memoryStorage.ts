@@ -1,12 +1,16 @@
 import type { MemoryTreeResponse } from '../types/memory';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop } from './platform/tauri';
+import { canUseWebApi, requestWebApi } from './platform/webApi';
 
 export async function readMemoryTreeFromStorage() {
-  if (!isTauriRuntime()) {
-    return null;
+  if (isDesktopRuntime()) {
+    return invokeDesktop<MemoryTreeResponse>('read_memory_tree');
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<MemoryTreeResponse>('read_memory_tree');
+  if (canUseWebApi()) {
+    return requestWebApi<MemoryTreeResponse>('/api/memory/tree');
+  }
+
+  return null;
 }

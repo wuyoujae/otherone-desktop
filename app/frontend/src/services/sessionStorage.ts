@@ -1,30 +1,42 @@
 import type { SessionDetail, SessionSummary } from '../types/session';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop } from './platform/tauri';
+import { canUseWebApi, requestWebApi } from './platform/webApi';
 
 export async function loadSessionsFromStorage() {
-  if (!isTauriRuntime()) {
-    return [];
+  if (isDesktopRuntime()) {
+    return invokeDesktop<SessionSummary[]>('load_sessions');
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SessionSummary[]>('load_sessions');
+  if (canUseWebApi()) {
+    return requestWebApi<SessionSummary[]>('/api/sessions');
+  }
+
+  return [];
 }
 
 export async function readSessionFromStorage(sessionId: string) {
-  if (!isTauriRuntime()) {
-    return null;
+  if (isDesktopRuntime()) {
+    return invokeDesktop<SessionDetail>('read_session', { sessionId });
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SessionDetail>('read_session', { sessionId });
+  if (canUseWebApi()) {
+    return requestWebApi<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  return null;
 }
 
 export async function updateSessionTitleInStorage(sessionId: string, title: string) {
-  if (!isTauriRuntime()) {
+  if (isDesktopRuntime()) {
+    await invokeDesktop<void>('update_session_title', { payload: { sessionId, title } });
     return;
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('update_session_title', { payload: { sessionId, title } });
+  if (canUseWebApi()) {
+    await requestWebApi<void>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
+      method: 'PATCH',
+      body: { title },
+    });
+  }
 }

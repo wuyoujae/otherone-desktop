@@ -2,6 +2,7 @@ mod ai_runtime;
 mod ai_test;
 mod app_settings;
 mod artifacts;
+mod auth;
 mod chat;
 mod memory;
 mod native_dialog;
@@ -61,6 +62,7 @@ fn main() {
             if let Ok(db) = crate::storage::open_database(&app.handle()) {
                 let _ = crate::plugins::init_plugin_db(&db);
                 let _ = crate::artifacts::init_artifact_database(&db);
+                let _ = crate::auth::init_auth_database(&db);
                 let _ = crate::workflow::init_workflow_database(&db);
                 let _ = crate::weixin_clawbot::init_weixin_clawbot_database(&db);
             }

@@ -1,4 +1,4 @@
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { isDesktopRuntime } from '../services/platform/runtime';
 
 export async function openExternalUrl(url: string) {
   const normalizedUrl = normalizeExternalUrl(url);
@@ -8,10 +8,16 @@ export async function openExternalUrl(url: string) {
   }
 
   try {
-    await openUrl(normalizedUrl);
+    if (isDesktopRuntime()) {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(normalizedUrl);
+      return;
+    }
   } catch {
-    window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
+    // Fall through to the browser opener.
   }
+
+  window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
 }
 
 function normalizeExternalUrl(url: string) {

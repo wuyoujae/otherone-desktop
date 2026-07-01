@@ -63,6 +63,7 @@ import { VirtuosoHandle } from 'react-virtuoso';
 import { listFileArtifacts, listenToFileArtifacts, type FileArtifactRecord } from './services/artifactStorage';
 import { cancelChatMessage, enqueueChatMessageToStorage, listenToChatStream, sendChatMessageToStorage, type ChatStreamEvent } from './services/chatStorage';
 import { loadSessionsFromStorage, readSessionFromStorage, updateSessionTitleInStorage } from './services/sessionStorage';
+import { isDesktopRuntime } from './services/platform/runtime';
 import { defaultEngineSettings, type StorageSettings } from './types/appSettings';
 import type { ModelOption, ProviderConfig, ReasoningEffort } from './types/apiConfig';
 import type {
@@ -877,7 +878,7 @@ export function App() {
     }
     themeMeta.content = theme === 'dark' ? '#000000' : '#ffffff';
 
-    if ('__TAURI_INTERNALS__' in window) {
+    if (isDesktopRuntime()) {
       import('@tauri-apps/api/window')
         .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme))
         .catch(() => {

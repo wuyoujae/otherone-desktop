@@ -4,8 +4,9 @@ import type {
   WeixinLoginCheckResponse,
   WeixinLoginQr,
 } from '../types/weixinClawbot';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop } from './platform/tauri';
+import { canUseWebApi, requestWebApi } from './platform/webApi';
 
 const defaultStatus: WeixinClawbotStatus = {
   configured: false,
@@ -22,15 +23,21 @@ const defaultStatus: WeixinClawbotStatus = {
 };
 
 export async function loadWeixinClawbotStatus(): Promise<WeixinClawbotStatus> {
-  if (!isTauriRuntime()) return defaultStatus;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinClawbotStatus>('weixin_clawbot_status');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinClawbotStatus>('weixin_clawbot_status');
+  if (canUseWebApi()) return requestWebApi<WeixinClawbotStatus>('/api/weixin-clawbot/status');
+  return defaultStatus;
 }
 
 export async function beginWeixinClawbotLogin(): Promise<WeixinLoginQr | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinLoginQr>('weixin_clawbot_begin_login');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinLoginQr>('weixin_clawbot_begin_login');
+
+  if (canUseWebApi()) {
+    return requestWebApi<WeixinLoginQr>('/api/weixin-clawbot/login/begin', {
+      method: 'POST',
+    });
+  }
+
+  return null;
 }
 
 export async function checkWeixinClawbotLogin(
@@ -38,37 +45,62 @@ export async function checkWeixinClawbotLogin(
   baseUrl: string,
   verifyCode?: string,
 ): Promise<WeixinLoginCheckResponse | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinLoginCheckResponse>('weixin_clawbot_check_login', {
-    request: {
-      qrcode,
-      baseUrl,
-      verifyCode: verifyCode?.trim() || null,
-    },
-  });
+  const request = {
+    qrcode,
+    baseUrl,
+    verifyCode: verifyCode?.trim() || null,
+  };
+
+  if (isDesktopRuntime()) return invokeDesktop<WeixinLoginCheckResponse>('weixin_clawbot_check_login', { request });
+
+  if (canUseWebApi()) {
+    return requestWebApi<WeixinLoginCheckResponse>('/api/weixin-clawbot/login/check', {
+      method: 'POST',
+      body: request,
+    });
+  }
+
+  return null;
 }
 
 export async function startWeixinClawbot(): Promise<WeixinClawbotStatus> {
-  if (!isTauriRuntime()) return defaultStatus;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinClawbotStatus>('weixin_clawbot_start');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinClawbotStatus>('weixin_clawbot_start');
+
+  if (canUseWebApi()) {
+    return requestWebApi<WeixinClawbotStatus>('/api/weixin-clawbot/start', {
+      method: 'POST',
+    });
+  }
+
+  return defaultStatus;
 }
 
 export async function stopWeixinClawbot(): Promise<WeixinClawbotStatus> {
-  if (!isTauriRuntime()) return defaultStatus;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinClawbotStatus>('weixin_clawbot_stop');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinClawbotStatus>('weixin_clawbot_stop');
+
+  if (canUseWebApi()) {
+    return requestWebApi<WeixinClawbotStatus>('/api/weixin-clawbot/stop', {
+      method: 'POST',
+    });
+  }
+
+  return defaultStatus;
 }
 
 export async function resetWeixinClawbot(): Promise<WeixinClawbotStatus> {
-  if (!isTauriRuntime()) return defaultStatus;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinClawbotStatus>('weixin_clawbot_reset');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinClawbotStatus>('weixin_clawbot_reset');
+
+  if (canUseWebApi()) {
+    return requestWebApi<WeixinClawbotStatus>('/api/weixin-clawbot/reset', {
+      method: 'POST',
+    });
+  }
+
+  return defaultStatus;
 }
 
 export async function loadWeixinClawbotEvents(): Promise<WeixinClawbotEvent[]> {
-  if (!isTauriRuntime()) return [];
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<WeixinClawbotEvent[]>('weixin_clawbot_list_events');
+  if (isDesktopRuntime()) return invokeDesktop<WeixinClawbotEvent[]>('weixin_clawbot_list_events');
+  if (canUseWebApi()) return requestWebApi<WeixinClawbotEvent[]>('/api/weixin-clawbot/events');
+  return [];
 }

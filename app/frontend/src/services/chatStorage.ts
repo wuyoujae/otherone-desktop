@@ -1,6 +1,7 @@
 import type { ReasoningEffort } from '../types/apiConfig';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop, listenDesktop } from './platform/tauri';
+import { canUseWebApi, listenWebApiEventStream, requestWebApi } from './platform/webApi';
 
 export type SendChatMessageRequest = {
   sessionId?: string;
@@ -37,43 +38,66 @@ export type ChatStreamEvent = {
 };
 
 export async function sendChatMessageToStorage(payload: SendChatMessageRequest) {
-  if (!isTauriRuntime()) {
-    throw new Error('真实对话需要在桌面应用中运行。');
+  if (isDesktopRuntime()) {
+    return invokeDesktop<SendChatMessageResponse>('send_chat_message', { request: payload });
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SendChatMessageResponse>('send_chat_message', { request: payload });
+  if (canUseWebApi()) {
+    return requestWebApi<SendChatMessageResponse>('/api/chat/messages', {
+      method: 'POST',
+      body: payload,
+    });
+  }
+
+  throw new Error('真实对话需要桌面端或已配置的 Web API。');
 }
 
 export async function enqueueChatMessageToStorage(payload: EnqueueChatMessageRequest) {
-  if (!isTauriRuntime()) {
-    throw new Error('真实对话需要在桌面应用中运行。');
+  if (isDesktopRuntime()) {
+    await invokeDesktop<void>('enqueue_chat_message', { request: payload });
+    return;
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('enqueue_chat_message', { request: payload });
+  if (canUseWebApi()) {
+    await requestWebApi<void>('/api/chat/messages/enqueue', {
+      method: 'POST',
+      body: payload,
+    });
+    return;
+  }
+
+  throw new Error('真实对话需要桌面端或已配置的 Web API。');
 }
 
 export async function cancelChatMessage(sessionId: string) {
-  if (!isTauriRuntime()) {
-    throw new Error('取消对话需要在桌面应用中运行。');
+  if (isDesktopRuntime()) {
+    await invokeDesktop<void>('cancel_chat_message', { sessionId });
+    return;
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('cancel_chat_message', { sessionId });
+  if (canUseWebApi()) {
+    await requestWebApi<void>('/api/chat/messages/cancel', {
+      method: 'POST',
+      body: { sessionId },
+    });
+    return;
+  }
+
+  throw new Error('取消对话需要桌面端或已配置的 Web API。');
 }
 
 export async function listenToChatStream(onEvent: (event: ChatStreamEvent) => void) {
-  if (!isTauriRuntime()) {
-    console.warn('[chatStorage] 非 Tauri 环境，跳过事件监听');
-    return () => undefined;
+  if (isDesktopRuntime()) {
+    console.log('[chatStorage] 正在注册 chat_stream_event 监听器...');
+    const unlisten = await listenDesktop<ChatStreamEvent>('chat_stream_event', onEvent);
+    console.log('[chatStorage] chat_stream_event 监听器注册成功');
+    return unlisten;
   }
 
-  const { listen } = await import('@tauri-apps/api/event');
-  console.log('[chatStorage] 正在注册 chat_stream_event 监听器...');
-  const unlisten = await listen<ChatStreamEvent>('chat_stream_event', (event) => {
-    onEvent(event.payload);
-  });
-  console.log('[chatStorage] chat_stream_event 监听器注册成功');
-  return unlisten;
+  if (canUseWebApi()) {
+    return listenWebApiEventStream<ChatStreamEvent>('/api/chat/stream', onEvent);
+  }
+
+  console.warn('[chatStorage] 未配置 Web API，跳过事件监听');
+  return () => undefined;
 }

@@ -1,15 +1,14 @@
 import { Maximize2, Minimize2, Minus, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { isDesktopRuntime } from '../services/platform/runtime';
 
 const titlebarIconSize = { width: 14, height: 14 };
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export function WindowTitleBar() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   const syncMaximizedState = useCallback(async () => {
-    if (!isTauriRuntime()) return;
+    if (!isDesktopRuntime()) return;
 
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -20,7 +19,7 @@ export function WindowTitleBar() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!isDesktopRuntime()) return;
 
     let disposed = false;
     let unlistenResize: (() => void) | null = null;
@@ -48,7 +47,7 @@ export function WindowTitleBar() {
 
   const runWindowAction = useCallback(
     async (action: 'close' | 'drag' | 'minimize' | 'toggleMaximize') => {
-      if (!isTauriRuntime()) return;
+      if (!isDesktopRuntime()) return;
 
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');

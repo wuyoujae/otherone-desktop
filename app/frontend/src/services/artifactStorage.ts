@@ -1,6 +1,7 @@
 import type { FileArtifact } from '../components/ArtifactsPanel';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop, listenDesktop } from './platform/tauri';
+import { canUseWebApi, listenWebApiEventStream, requestWebApi } from './platform/webApi';
 
 export type FileArtifactAction = 'edited' | 'added' | 'deleted';
 
@@ -14,22 +15,25 @@ export type FileArtifactRecord = FileArtifact & {
 };
 
 export async function listFileArtifacts(sessionId: string) {
-  if (!isTauriRuntime()) {
-    return [];
+  if (isDesktopRuntime()) {
+    return invokeDesktop<FileArtifactRecord[]>('list_file_artifacts', { sessionId });
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<FileArtifactRecord[]>('list_file_artifacts', { sessionId });
+  if (canUseWebApi()) {
+    return requestWebApi<FileArtifactRecord[]>(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`);
+  }
+
+  return [];
 }
 
 export async function listenToFileArtifacts(onEvent: (event: FileArtifactRecord) => void) {
-  if (!isTauriRuntime()) {
-    return () => undefined;
+  if (isDesktopRuntime()) {
+    return listenDesktop<FileArtifactRecord>('file_artifact_event', onEvent);
   }
 
-  const { listen } = await import('@tauri-apps/api/event');
-  const unlisten = await listen<FileArtifactRecord>('file_artifact_event', (event) => {
-    onEvent(event.payload);
-  });
-  return unlisten;
+  if (canUseWebApi()) {
+    return listenWebApiEventStream<FileArtifactRecord>('/api/artifacts/stream', onEvent);
+  }
+
+  return () => undefined;
 }

@@ -1,21 +1,30 @@
 import type { ProviderConfig } from '../types/apiConfig';
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import { isDesktopRuntime } from './platform/runtime';
+import { invokeDesktop } from './platform/tauri';
+import { canUseWebApi, requestWebApi } from './platform/webApi';
 
 export async function loadApiConfigsFromStorage() {
-  if (!isTauriRuntime()) {
-    return [];
+  if (isDesktopRuntime()) {
+    return invokeDesktop<ProviderConfig[]>('load_api_configs');
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ProviderConfig[]>('load_api_configs');
+  if (canUseWebApi()) {
+    return requestWebApi<ProviderConfig[]>('/api/api-configs');
+  }
+
+  return [];
 }
 
 export async function saveApiConfigsToStorage(providers: ProviderConfig[]) {
-  if (!isTauriRuntime()) {
+  if (isDesktopRuntime()) {
+    await invokeDesktop<void>('save_api_configs', { providers });
     return;
   }
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('save_api_configs', { providers });
+  if (canUseWebApi()) {
+    await requestWebApi<void>('/api/api-configs', {
+      method: 'PUT',
+      body: { providers },
+    });
+  }
 }

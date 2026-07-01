@@ -16,6 +16,27 @@
 - Keep the implementation as a single prototype screen until real routes/data are required.
 - Use `lucide-react` instead of the prototype CDN script so the desktop app works without external runtime script loading.
 
+## Web/Desktop Platform Adapter Foundation
+
+### Approach
+- Keep the current desktop app behavior on Tauri IPC.
+- Add a thin platform adapter layer for runtime detection, desktop IPC, Web HTTP, and Web SSE.
+- Keep React components importing the existing `src/services/*` facades.
+- Let Web runtime use `VITE_OTHERONE_WEB_API_BASE_URL` when a backend exists and fall back to safe browser preview behavior when it does not.
+
+### Checklist
+- [x] Document the Web/Desktop adapter architecture.
+- [x] Add shared platform runtime, Tauri, and Web API helpers.
+- [x] Route existing service facades through the platform adapter.
+- [x] Keep desktop build behavior unchanged.
+- [x] Verify frontend build.
+
+### Key Decisions
+- This phase does not create the full `otherone-web` app.
+- This phase does not implement the Web backend.
+- Native filesystem selection and reveal/open actions remain desktop-only.
+- `cargo check` should be run through the Visual Studio C++ environment; plain PowerShell cannot find `link.exe`.
+
 ## Message Panel Detail
 
 ### Approach
